@@ -37,9 +37,9 @@ def _archive_search(ctx: ToolContext, query: str, media_type: str = "*", fields:
     total = data.get("response", {}).get("numFound", 0)
     
     if not results:
-        return f"No results found for "{query}" (media_type={media_type})."
+        return f"No results found for '{query}' (media_type={media_type})."
     
-    output = f"**Archive.org search: "{query}"**\n"
+    output = f"**Archive.org search: '{query}'**\n"
     output += f"Found {total} results, showing {len(results)} on page {page}\n\n"
     
     for item in results:
