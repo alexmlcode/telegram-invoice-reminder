@@ -55,8 +55,6 @@ def get_tools() -> list[ToolEntry]:
     return [
         ToolEntry(
             name="gdelt_search",
-            description="Search GDELT Project global news events",
-            func=_gdelt_search,
             schema={
                 "type": "object",
                 "properties": {
@@ -66,5 +64,6 @@ def get_tools() -> list[ToolEntry]:
                 },
                 "required": ["query"],
             },
+            handler=_gdelt_search,
         ),
     ]
