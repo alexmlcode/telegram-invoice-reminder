@@ -164,7 +164,7 @@ if MODEL_LIGHT is None:
 BUDGET_REPORT_EVERY_MESSAGES = 10
 SOFT_TIMEOUT_SEC = max(60, int(get_cfg("OUROBOROS_SOFT_TIMEOUT_SEC", default="600", allow_legacy_secret=True) or "600"))
 HARD_TIMEOUT_SEC = max(
-    120, int(get_cfg("OUROBOROS_HARD_TIMEOUT_SEC", default="1800", allow_legacy_secret=True) or "1800")
+    120, int(get_cfg("OUROBOROS_HARD_TIMEOUT_SEC", default="86400", allow_legacy_secret=True) or "86400")
 )
 DIAG_HEARTBEAT_SEC = _parse_int_cfg(
     get_cfg("OUROBOROS_DIAG_HEARTBEAT_SEC", default="30", allow_legacy_secret=True),
