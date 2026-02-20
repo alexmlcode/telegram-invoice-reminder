@@ -96,7 +96,7 @@ EXPECTED_TOOLS = [
     "gdelt_search",
     # Telegram user-mode
     "tg_get_me", "tg_connect", "tg_send", "tg_read", "tg_join",
-    "tg_list_chats", "tg_search",
+    "tg_list_chats", "tg_search", "tg_get_entity",
     "chat_history", "update_scratchpad", "update_identity",
     "request_restart", "promote_to_stable", "request_review",
     "schedule_task", "cancel_task",

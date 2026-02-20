@@ -61,15 +61,24 @@ async def _get_client():
 
 
 def _fmt_entity(e) -> Dict[str, Any]:
-    """Format a Telegram entity (user/chat/channel) to dict."""
+    """Format a Telegram entity (user/chat/channel) to dict.
+
+    Types returned:
+      "user"       — private user
+      "channel"    — broadcast channel (read-only, post by admins)
+      "supergroup" — megagroup (Channel with megagroup=True / broadcast=False)
+      "group"      — legacy small group (Chat)
+    """
     from telethon.tl.types import User, Chat, Channel
     if isinstance(e, User):
         return {"type": "user", "id": e.id,
                 "name": f"{e.first_name or ''} {e.last_name or ''}".strip(),
                 "username": e.username or ""}
     if isinstance(e, Channel):
-        return {"type": "channel", "id": e.id, "name": e.title or "",
-                "username": e.username or "", "broadcast": e.broadcast}
+        # broadcast=True → channel; broadcast=False → supergroup/megagroup
+        t = "channel" if e.broadcast else "supergroup"
+        return {"type": t, "id": e.id, "name": e.title or "",
+                "username": e.username or ""}
     if isinstance(e, Chat):
         return {"type": "group", "id": e.id, "name": e.title or ""}
     return {"type": "unknown", "id": getattr(e, "id", None)}
@@ -131,15 +140,19 @@ def _tg_read(ctx: ToolContext, entity: str, limit: int = 20,
             sender = ""
             if msg.sender:
                 s = msg.sender
-                sender = getattr(s, "username", None) or \
-                         getattr(s, "first_name", None) or \
-                         str(getattr(s, "id", ""))
+                sender = (getattr(s, "username", None)
+                          or getattr(s, "first_name", None)
+                          or str(getattr(s, "id", "")))
+            elif msg.post:
+                # Channel post — sender is the channel itself
+                sender = "[channel]"
             msgs.append({
                 "id": msg.id,
                 "date": msg.date.isoformat() if msg.date else "",
                 "sender": sender,
                 "text": (msg.text or "")[:2000],
                 "is_reply": bool(msg.reply_to_msg_id),
+                "reply_to_msg_id": msg.reply_to_msg_id,
             })
         return json.dumps({"entity": entity, "messages": msgs},
                           ensure_ascii=False, indent=2)
@@ -147,6 +160,22 @@ def _tg_read(ctx: ToolContext, entity: str, limit: int = 20,
         return _run(_inner())
     except Exception as e:
         return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+def _tg_get_entity(ctx: ToolContext, entity: str) -> str:
+    """Resolve any entity (username, chat_id, link) and return its type and info.
+
+    Use this to determine if a chat_id is a user DM, group, supergroup, or channel
+    before deciding how to reply.
+    """
+    async def _inner():
+        c = await _get_client()
+        e = await c.get_entity(entity)
+        return json.dumps(_fmt_entity(e), ensure_ascii=False)
+    try:
+        return _run(_inner())
+    except Exception as ex:
+        return json.dumps({"error": str(ex)}, ensure_ascii=False)
 
 
 def _tg_join(ctx: ToolContext, entity: str) -> str:
@@ -287,6 +316,19 @@ def get_tools() -> List[ToolEntry]:
                 "limit": {"type": "integer", "description": "Max results (default 10)", "default": 10},
             }, "required": ["query"]},
         }, _tg_search, timeout_sec=30),
+
+        ToolEntry("tg_get_entity", {
+            "name": "tg_get_entity",
+            "description": (
+                "Resolve a Telegram entity and return its type and info. "
+                "Returns type: 'user' | 'channel' | 'supergroup' | 'group'. "
+                "Use before replying to know if you're in a DM, group, or channel."
+            ),
+            "parameters": {"type": "object", "properties": {
+                "entity": {"type": "string",
+                           "description": "Username (@x), chat_id, phone, or invite link"},
+            }, "required": ["entity"]},
+        }, _tg_get_entity, timeout_sec=15),
 
         ToolEntry("tg_connect", {
             "name": "tg_connect",

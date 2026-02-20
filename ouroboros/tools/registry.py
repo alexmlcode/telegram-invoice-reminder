@@ -82,7 +82,7 @@ class ToolEntry:
 # Tools available to non-privileged user_chat tasks (external Telegram users)
 USER_CHAT_TOOLS = frozenset({
     "web_search", "github_search", "gdelt_search",
-    "tg_send", "tg_read", "tg_search", "tg_get_me", "tg_join", "tg_list_chats",
+    "tg_send", "tg_read", "tg_search", "tg_get_me", "tg_join", "tg_list_chats", "tg_get_entity",
     "knowledge_read", "chat_history",
 })
 
