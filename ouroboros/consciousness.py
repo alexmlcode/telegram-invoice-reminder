@@ -376,6 +376,9 @@ class BackgroundConsciousness:
         "chat_history",
         # GitHub Issues
         "list_github_issues", "get_github_issue",
+        # Evolution scouting — search GitHub and analyse external repos
+        "github_search",
+        "external_repo_sync", "external_repo_list", "external_repo_read",
     })
 
     def _build_registry(self) -> "ToolRegistry":
