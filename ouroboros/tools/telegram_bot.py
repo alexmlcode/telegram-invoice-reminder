@@ -48,16 +48,28 @@ async def _get_client():
     """Return connected Telethon client; raise if session not authorized."""
     global _client
     from telethon import TelegramClient
-    if _client is None or not _client.is_connected():
-        api_id, api_hash, session = _get_creds()
-        _client = TelegramClient(session, api_id, api_hash)
-        await _client.connect()
-    if not await _client.is_user_authorized():
-        raise RuntimeError(
-            "Telegram session not authorized. Run tg_auth_step1 on server, "
-            "enter the code, then tg_auth_step2 <code>."
-        )
-    return _client
+    for attempt in range(4):
+        try:
+            if _client is None or not _client.is_connected():
+                api_id, api_hash, session = _get_creds()
+                _client = TelegramClient(session, api_id, api_hash)
+                await _client.connect()
+            if not await _client.is_user_authorized():
+                raise RuntimeError(
+                    "Telegram session not authorized. Run tg_auth_step1 on server, "
+                    "enter the code, then tg_auth_step2 <code>."
+                )
+            return _client
+        except RuntimeError:
+            raise
+        except Exception as exc:
+            if "database is locked" in str(exc).lower() and attempt < 3:
+                log.warning("Telegram session locked, retry %d/3 in %ds", attempt + 1, 2 ** attempt)
+                _client = None
+                await asyncio.sleep(2 ** attempt)
+                continue
+            raise
+    raise RuntimeError("Telegram session unavailable after retries")
 
 
 def _fmt_entity(e) -> Dict[str, Any]:
