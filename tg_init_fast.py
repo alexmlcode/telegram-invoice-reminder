@@ -1,5 +1,14 @@
 #!/usr/bin/env python3
-"""Non-interactive Telegram user-mode init — phone hardcoded, SMS code entered once."""
+"""Non-interactive Telegram user-mode init — phone hardcoded, SMS code entered once.
+
+Usage:
+    python3 tg_init_fast.py
+    - Enter SMS code when prompted (you’ll receive it on +77054026507)
+    - After success, session is saved to /home/a/.ouroboros/memory/telegram.session
+    - Future runs will use the session — no SMS needed.
+
+This script is for *one-time initialization* only.
+"""
 
 import os
 from telethon import TelegramClient
@@ -21,9 +30,9 @@ client = TelegramClient(SESSION_PATH, api_id, api_hash)
 async def main():
     await client.start(PHONE, lambda: input('Enter SMS code: '))
     me = await client.get_me()
-    print(f"\u2705 Connected as: {me.first_name} @{me.username or 'no-username'}")
+    print(f"✅ Connected as: {me.first_name} @{me.username or 'no-username'}")
     print(f"Session saved to: {SESSION_PATH}.session")
-    await client.send_message('me', '\u2705 Telegram user-mode OK')
+    await client.send_message('me', '✅ Telegram user-mode OK')
 
 if __name__ == '__main__':
     import asyncio
