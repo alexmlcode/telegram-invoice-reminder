@@ -381,6 +381,8 @@ class BackgroundConsciousness:
         "external_repo_sync", "external_repo_list", "external_repo_read",
         # Telegram user-mode — proactive outreach, channel/group reading
         "tg_send", "tg_read", "tg_list_chats", "tg_join", "tg_search", "tg_get_me",
+        # Email — read, search, send, reply
+        "email_read", "email_search", "email_send", "email_reply",
     })
 
     def _build_registry(self) -> "ToolRegistry":

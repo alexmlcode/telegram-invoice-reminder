@@ -83,6 +83,7 @@ class ToolEntry:
 USER_CHAT_TOOLS = frozenset({
     "web_search", "github_search", "gdelt_search",
     "tg_send", "tg_read", "tg_search", "tg_get_me", "tg_join", "tg_list_chats", "tg_get_entity",
+    "email_read", "email_search", "email_send", "email_reply",
     "knowledge_read", "chat_history",
 })
 

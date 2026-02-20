@@ -108,6 +108,8 @@ EXPECTED_TOOLS = [
     # GitHub Issues
     "list_github_issues", "get_github_issue", "comment_on_issue",
     "close_github_issue", "create_github_issue",
+    # Email
+    "email_read", "email_search", "email_send", "email_reply",
     "summarize_dialogue",
     # Task decomposition
     "get_task_result", "wait_for_task",
