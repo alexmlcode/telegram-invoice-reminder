@@ -1,11 +1,9 @@
 import logging
-from typing import List, Dict, Any, Optional, Callable
+from typing import List, Dict, Any, Optional
 from dataclasses import dataclass
-from datetime import datetime
-import asyncio
 import os
 
-from ouroboros.tools.retry_policy import retry_async, DEFAULT_RETRY_CONFIG, should_retry_telegram, telegram_retry_after_ms
+from ouroboros.tools.registry import ToolContext, ToolEntry
 
 log = logging.getLogger(__name__)
 
@@ -41,7 +39,7 @@ class TelegramBot:
         self.handlers = handlers or []
         self._client = None
         self._running = False
-        self._message_queue = asyncio.Queue()
+        self._message_queue = None  # Will be set when asyncio is available
     
     def add_handler(self, handler):
         """Register a message handler."""
@@ -69,6 +67,8 @@ class TelegramBot:
     
     async def send_message(self, entity, message, **kwargs):
         """Send a message safely with retry logic."""
+        from ouroboros.tools.retry_policy import retry_async
+        
         async def _send():
             if not self._client:
                 raise RuntimeError("Not connected")
@@ -86,24 +86,10 @@ class TelegramBot:
                 break
             
             if hasattr(event, 'message') and event.message and not event.message.out:
-                await self._message_queue.put(event.message)
+                if self._message_queue:
+                    await self._message_queue.put(event.message)
         
         await self.disconnect()
-    
-    async def process_messages(self):
-        """Process incoming messages through registered handlers."""
-        while self._running:
-            try:
-                message = await asyncio.wait_for(self._message_queue.get(), timeout=5.0)
-                for handler in self.handlers:
-                    try:
-                        await handler(message)
-                    except Exception as e:
-                        log.error(f"Handler {handler} failed: {e}")
-            except asyncio.TimeoutError:
-                continue
-            except Exception as e:
-                log.error(f"Error processing messages: {e}")
 
 
 class TelegramTools:
@@ -118,76 +104,82 @@ class TelegramTools:
             self._bot = TelegramBot(account)
         return self._bot
     
-    def tg_send(self, ctx, entity: str, message: str, parse_mode: Optional[str] = None) -> str:
+    def tg_send(self, ctx: ToolContext, entity: str, message: str, parse_mode: Optional[str] = None) -> str:
         """Send a message via Telegram."""
-        import asyncio
-        
-        async def _send():
-            bot = self._ensure_bot()
-            if not bot._client:
-                await bot.connect()
-            kwargs = {"parse_mode": parse_mode} if parse_mode else {}
-            await bot.send_message(entity, message, **kwargs)
-            return f"✓ Message sent to {entity}"
+        from telethon import TelegramClient
         
         try:
+            bot = self._ensure_bot()
+            account = bot.account
+            
+            async def _send():
+                async with TelegramClient(account.session_path, account.api_id, account.api_hash) as client:
+                    if parse_mode:
+                        await client.send_message(entity, message, parse_mode=parse_mode)
+                    else:
+                        await client.send_message(entity, message)
+                    return f"✓ Message sent to {entity}"
+            
+            import asyncio
             return asyncio.run(_send())
         except Exception as e:
             return f"⚠️ Failed to send: {e}"
     
-    def tg_connect(self, ctx) -> str:
+    def tg_connect(self, ctx: ToolContext) -> str:
         """Connect to Telegram and start listening for messages."""
-        import asyncio
-        
-        async def _connect():
-            bot = self._ensure_bot()
-            await bot.connect()
-            return "✓ Connected to Telegram"
+        from telethon import TelegramClient
         
         try:
+            bot = self._ensure_bot()
+            account = bot.account
+            
+            async def _connect():
+                client = TelegramClient(account.session_path, account.api_id, account.api_hash)
+                await client.start()
+                return "✓ Connected to Telegram"
+            
+            import asyncio
             return asyncio.run(_connect())
         except Exception as e:
             return f"⚠️ Failed to connect: {e}"
 
 
 # Global instance
-_telegram_tools = TelegramTools()
+telegram_tools = TelegramTools()
 
 
-def get_tools() -> List[Any]:
+def get_tools() -> List[ToolEntry]:
     """Return tool entries for Telegram integration."""
     return [
-        _tg_send_entry(),
-        _tg_connect_entry(),
-    ]
-
-
-def _tg_send_entry():
-    return {
-        "name": "tg_send",
-        "description": "Send a message via Telegram. Requires TELEGRAM_API_ID and TELEGRAM_API_HASH in env.",
-        "handler": lambda ctx, entity, message, parse_mode=None: _telegram_tools.tg_send(ctx, entity, message, parse_mode),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "entity": {"type": "string", "description": "Username, chat ID, or 'me' for self"},
-                "message": {"type": "string", "description": "Message text to send"},
-                "parse_mode": {"type": "string", "enum": ["markdown", "html"], "description": "Optional formatting"},
+        ToolEntry(
+            "tg_send",
+            {
+                "name": "tg_send",
+                "description": "Send a message via Telegram. Requires TELEGRAM_API_ID and TELEGRAM_API_HASH in env.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "entity": {"type": "string", "description": "Username, chat ID, or 'me' for self"},
+                        "message": {"type": "string", "description": "Message text to send"},
+                        "parse_mode": {"type": "string", "enum": ["markdown", "html"], "description": "Optional formatting"},
+                    },
+                    "required": ["entity", "message"],
+                },
             },
-            "required": ["entity", "message"],
-        },
-        "timeout_sec": 60,
-    }
-
-
-def _tg_connect_entry():
-    return {
-        "name": "tg_connect",
-        "description": "Connect to Telegram and start listening for messages.",
-        "handler": lambda ctx: _telegram_tools.tg_connect(ctx),
-        "parameters": {
-            "type": "object",
-            "properties": {},
-        },
-        "timeout_sec": 120,
-    }
+            telegram_tools.tg_send,
+            timeout_sec=60,
+        ),
+        ToolEntry(
+            "tg_connect",
+            {
+                "name": "tg_connect",
+                "description": "Connect to Telegram and start listening for messages.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {},
+                },
+            },
+            telegram_tools.tg_connect,
+            timeout_sec=120,
+        ),
+    ]
