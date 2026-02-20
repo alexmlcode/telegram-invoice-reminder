@@ -92,8 +92,11 @@ EXPECTED_TOOLS = [
     "run_shell", "claude_code_edit",
     "browse_page", "browser_action",
     "web_search", "github_search",
-    # Self-added by bot (Telegram and GDELT integrations)
-    "gdelt_search", "tg_connect", "tg_send",
+    # GDELT
+    "gdelt_search",
+    # Telegram user-mode
+    "tg_get_me", "tg_connect", "tg_send", "tg_read", "tg_join",
+    "tg_list_chats", "tg_search",
     "chat_history", "update_scratchpad", "update_identity",
     "request_restart", "promote_to_stable", "request_review",
     "schedule_task", "cancel_task",
