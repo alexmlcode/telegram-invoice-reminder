@@ -108,6 +108,7 @@ EXPECTED_TOOLS = [
     "generate_evolution_stats",
     # VLM / Vision
     "analyze_screenshot", "vlm_query",
+    "gdelt_search", "tg_connect", "tg_send",
     # Message routing
     "forward_to_worker",
     # Context management

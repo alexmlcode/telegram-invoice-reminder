@@ -56,13 +56,17 @@ def get_tools() -> list[ToolEntry]:
         ToolEntry(
             name="gdelt_search",
             schema={
-                "type": "object",
-                "properties": {
-                    "query": {"type": "string", "description": "Search query (e.g., 'climate protest Russia')"},
-                    "timespan": {"type": "string", "description": "Time window (e.g., 'last3months', '2025-01-01,2025-03-01')", "default": "last3months"},
-                    "coverage": {"type": "integer", "description": "Minimum number of sources", "default": 50},
+                "name": "gdelt_search",
+                "description": "Search GDELT Project for global news events by keyword and timespan.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "Search query (e.g., 'climate protest Russia')"},
+                        "timespan": {"type": "string", "description": "Time window (e.g., 'last3months', '2025-01-01,2025-03-01')", "default": "last3months"},
+                        "coverage": {"type": "integer", "description": "Minimum number of sources", "default": 50},
+                    },
+                    "required": ["query"],
                 },
-                "required": ["query"],
             },
             handler=_gdelt_search,
         ),
