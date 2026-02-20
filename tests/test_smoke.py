@@ -2,7 +2,7 @@
 
 Tests core invariants:
 - All modules import cleanly
-- Tool registry discovers all 33 tools
+- Tool registry discovers all 55 tools
 - Utility functions work correctly
 - Memory operations don't crash
 - Context builder produces valid structure
@@ -88,9 +88,12 @@ EXPECTED_TOOLS = [
     "repo_read", "repo_write_commit", "repo_list", "repo_commit_push",
     "drive_read", "drive_write", "drive_list",
     "git_status", "git_diff",
+    "external_repo_sync", "external_repo_list", "external_repo_read",
     "run_shell", "claude_code_edit",
     "browse_page", "browser_action",
-    "web_search",
+    "web_search", "github_search",
+    # Self-added by bot (Telegram and GDELT integrations)
+    "gdelt_search", "tg_connect", "tg_send",
     "chat_history", "update_scratchpad", "update_identity",
     "request_restart", "promote_to_stable", "request_review",
     "schedule_task", "cancel_task",
@@ -108,7 +111,6 @@ EXPECTED_TOOLS = [
     "generate_evolution_stats",
     # VLM / Vision
     "analyze_screenshot", "vlm_query",
-    "gdelt_search", "tg_connect", "tg_send",
     # Message routing
     "forward_to_worker",
     # Context management

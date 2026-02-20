@@ -419,3 +419,47 @@ def enqueue_evolution_task_if_needed() -> None:
     st["last_evolution_task_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
     save_state(st)
     send_with_budget(int(owner_chat_id), f"🧬 Evolution #{cycle}: {tid}")
+
+
+_SCOUT_INTERVAL_SEC = 4 * 3600  # 4 hours between scout runs
+
+
+def enqueue_scout_task_if_needed() -> None:
+    """Enqueue a background scout task every 4 hours if budget allows.
+
+    Scout tasks search GitHub for patterns and ideas to improve the bot.
+    Runs independently of the evolution queue — never blocks evolution tasks.
+    """
+    if queue_has_task_type("scout"):
+        return
+
+    st = load_state()
+    owner_chat_id = st.get("owner_chat_id")
+    if not owner_chat_id:
+        return
+
+    remaining = budget_remaining(st)
+    if remaining < EVOLUTION_BUDGET_RESERVE:
+        return
+
+    last_scout = st.get("last_scout_task_at")
+    if last_scout:
+        try:
+            last_dt = datetime.datetime.fromisoformat(last_scout)
+            elapsed = (datetime.datetime.now(datetime.timezone.utc) - last_dt).total_seconds()
+            if elapsed < _SCOUT_INTERVAL_SEC:
+                return
+        except Exception:
+            pass
+
+    tid = uuid.uuid4().hex[:8]
+    enqueue_task({
+        "id": tid, "type": "scout",
+        "chat_id": int(owner_chat_id),
+        "text": "SCOUT: search GitHub for patterns and ideas to improve yourself. "
+                "Use github_search, optionally external_repo_sync/read for deeper analysis. "
+                "Write findings to knowledge base. Schedule evolution task if you find something concrete.",
+    })
+    st["last_scout_task_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    save_state(st)
+    log.info("Scout task enqueued: %s", tid)

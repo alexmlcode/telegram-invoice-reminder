@@ -284,6 +284,7 @@ from supervisor.queue import (
     enqueue_task,
     enforce_task_timeouts,
     enqueue_evolution_task_if_needed,
+    enqueue_scout_task_if_needed,
     persist_queue_snapshot,
     restore_pending_from_snapshot,
     cancel_task_by_id,
@@ -545,6 +546,7 @@ def _handle_supervisor_command(text: str, chat_id: int, tg_offset: int = 0):
 offset = int(load_state().get("tg_offset") or 0)
 _last_diag_heartbeat_ts = 0.0
 _last_message_ts: float = time.time()
+_last_busy_notice_ts: float = 0.0
 _ACTIVE_MODE_SEC: int = 300
 
 try:
@@ -568,6 +570,7 @@ while True:
 
     enforce_task_timeouts()
     enqueue_evolution_task_if_needed()
+    enqueue_scout_task_if_needed()
     assign_tasks()
     persist_queue_snapshot(reason="main_loop")
 
@@ -664,6 +667,14 @@ while True:
                 send_with_budget(chat_id, "📎 Photo received, but a task is in progress. Send again when I'm free.")
             elif text:
                 agent.inject_message(text)
+                _now_busy = time.time()
+                if (_now_busy - _last_busy_notice_ts) >= 20.0:
+                    send_with_budget(
+                        chat_id,
+                        "⏳ Previous task is still running. I queued your new message and will continue with it next. "
+                        "You can also send /restart to interrupt and start fresh.",
+                    )
+                    _last_busy_notice_ts = _now_busy
 
         else:
             _BATCH_WINDOW_SEC = 1.5
