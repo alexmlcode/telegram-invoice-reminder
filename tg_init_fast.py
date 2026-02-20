@@ -19,15 +19,11 @@ SESSION_PATH = '/home/a/.ouroboros/memory/telegram'
 client = TelegramClient(SESSION_PATH, api_id, api_hash)
 
 async def main():
-    await client.start(
-        phone=lambda: PHONE,
-        password=lambda: input('2FA password (press Enter if none): '),
-        phone_code=lambda: input('Enter SMS code: ')
-    )
+    await client.start(PHONE, lambda: input('Enter SMS code: '))
     me = await client.get_me()
-    print(f"✅ Connected as: {me.first_name} @{me.username or 'no-username'}")
+    print(f"\u2705 Connected as: {me.first_name} @{me.username or 'no-username'}")
     print(f"Session saved to: {SESSION_PATH}.session")
-    await client.send_message('me', '✅ Telegram user-mode OK')
+    await client.send_message('me', '\u2705 Telegram user-mode OK')
 
 if __name__ == '__main__':
     import asyncio
