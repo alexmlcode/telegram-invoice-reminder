@@ -55,6 +55,9 @@ class ToolContext:
     # True when running inside handle_chat_direct (not a queued worker task)
     is_direct_chat: bool = False
 
+    # When set, only these tool names are available (used for user_chat tasks)
+    allowed_tools: Optional[frozenset] = None
+
     def repo_path(self, rel: str) -> pathlib.Path:
         return (self.repo_dir / safe_relpath(rel)).resolve()
 
@@ -76,11 +79,19 @@ class ToolEntry:
     timeout_sec: int = 120
 
 
+# Tools available to non-privileged user_chat tasks (external Telegram users)
+USER_CHAT_TOOLS = frozenset({
+    "web_search", "github_search", "gdelt_search",
+    "tg_send", "tg_read", "tg_search", "tg_get_me", "tg_join", "tg_list_chats",
+    "knowledge_read", "chat_history",
+})
+
 CORE_TOOL_NAMES = {
     "repo_read", "repo_list", "repo_write_commit", "repo_commit_push",
     "drive_read", "drive_list", "drive_write",
     "run_shell", "claude_code_edit",
     "git_status", "git_diff",
+    "external_repo_sync", "external_repo_list", "external_repo_read",
     "schedule_task", "wait_for_task", "get_task_result",
     "update_scratchpad", "update_identity",
     "chat_history", "web_search",
@@ -134,14 +145,14 @@ class ToolRegistry:
         return [e.name for e in self._entries.values()]
 
     def schemas(self, core_only: bool = False) -> List[Dict[str, Any]]:
-        if not core_only:
-            return [{"type": "function", "function": e.schema} for e in self._entries.values()]
-        # Core tools + meta-tools for discovering/enabling extended tools
-        result = []
-        for e in self._entries.values():
-            if e.name in CORE_TOOL_NAMES or e.name in ("list_available_tools", "enable_tools"):
-                result.append({"type": "function", "function": e.schema})
-        return result
+        allowed = self._ctx.allowed_tools if self._ctx else None
+        entries = self._entries.values()
+        if allowed is not None:
+            entries = [e for e in entries if e.name in allowed]
+        elif core_only:
+            entries = [e for e in entries
+                       if e.name in CORE_TOOL_NAMES or e.name in ("list_available_tools", "enable_tools")]
+        return [{"type": "function", "function": e.schema} for e in entries]
 
     def list_non_core_tools(self) -> List[Dict[str, str]]:
         """Return name+description of all non-core tools."""
@@ -165,6 +176,9 @@ class ToolRegistry:
         return entry.timeout_sec if entry is not None else 120
 
     def execute(self, name: str, args: Dict[str, Any]) -> str:
+        allowed = self._ctx.allowed_tools if self._ctx else None
+        if allowed is not None and name not in allowed:
+            return f"⚠️ Tool '{name}' not available in this context (user_chat mode)."
         entry = self._entries.get(name)
         if entry is None:
             return f"⚠️ Unknown tool: {name}. Available: {', '.join(sorted(self._entries.keys()))}"

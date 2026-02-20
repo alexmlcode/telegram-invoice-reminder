@@ -4,6 +4,10 @@
 *.key
 *.pem
 
+# Telegram session database (contains auth keys — never commit)
+*.session
+session.session
+
 # IDE
 .cursor/
 .vscode/
@@ -26,6 +30,3 @@ Thumbs.db
 # Release artifacts (not tracked)
 .create_release.py
 .release_notes.md
-# Telegram session database (contains auth keys — never commit)
-*.session
-session.session

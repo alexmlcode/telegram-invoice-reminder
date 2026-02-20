@@ -98,7 +98,7 @@ def _tg_get_me(ctx: ToolContext) -> str:
 
 
 def _tg_send(ctx: ToolContext, entity: str, message: str,
-             parse_mode: str = "") -> str:
+             parse_mode: str = "", reply_to: int = 0) -> str:
     """Send a message to a user, group, or channel."""
     async def _inner():
         c = await _get_client()
@@ -107,6 +107,8 @@ def _tg_send(ctx: ToolContext, entity: str, message: str,
             kwargs["parse_mode"] = "md"
         elif parse_mode in ("html",):
             kwargs["parse_mode"] = "html"
+        if reply_to:
+            kwargs["reply_to"] = int(reply_to)
         sent = await c.send_message(entity, message, **kwargs)
         return json.dumps({"sent": True, "message_id": sent.id,
                            "to": entity}, ensure_ascii=False)
@@ -237,6 +239,8 @@ def get_tools() -> List[ToolEntry]:
                 "message": {"type": "string", "description": "Message text"},
                 "parse_mode": {"type": "string", "enum": ["", "markdown", "html"],
                                "description": "Text formatting (optional)", "default": ""},
+                "reply_to": {"type": "integer",
+                             "description": "Message ID to reply to (for threaded replies in groups)", "default": 0},
             }, "required": ["entity", "message"]},
         }, _tg_send, timeout_sec=30),
 

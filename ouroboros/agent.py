@@ -334,6 +334,7 @@ class OuroborosAgent:
         append_jsonl(drive_logs / "events.jsonl", {"ts": utc_now_iso(), "type": "task_received", "task": sanitized_task})
 
         # Set tool context for this task
+        from ouroboros.tools.registry import USER_CHAT_TOOLS
         ctx = ToolContext(
             repo_dir=self.env.repo_dir,
             drive_root=self.env.drive_root,
@@ -344,6 +345,7 @@ class OuroborosAgent:
             emit_progress_fn=self._emit_progress,
             task_depth=int(task.get("depth", 0)),
             is_direct_chat=bool(task.get("_is_direct_chat")),
+            allowed_tools=USER_CHAT_TOOLS if self._current_task_type == "user_chat" else None,
         )
         self.tools.set_context(ctx)
 

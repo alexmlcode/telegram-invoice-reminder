@@ -379,6 +379,8 @@ class BackgroundConsciousness:
         # Evolution scouting — search GitHub and analyse external repos
         "github_search",
         "external_repo_sync", "external_repo_list", "external_repo_read",
+        # Telegram user-mode — proactive outreach, channel/group reading
+        "tg_send", "tg_read", "tg_list_chats", "tg_join", "tg_search", "tg_get_me",
     })
 
     def _build_registry(self) -> "ToolRegistry":

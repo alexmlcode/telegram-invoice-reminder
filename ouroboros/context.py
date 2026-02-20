@@ -22,6 +22,34 @@ from ouroboros.memory import Memory
 log = logging.getLogger(__name__)
 
 
+def _parse_positive_int_env(name: str) -> Optional[int]:
+    raw = os.environ.get(name)
+    if raw is None or str(raw).strip() == "":
+        return None
+    try:
+        value = int(str(raw).strip())
+    except Exception:
+        log.warning("Invalid %s=%r, ignoring", name, raw)
+        return None
+    if value <= 0:
+        return None
+    return value
+
+
+def _context_soft_cap_tokens() -> int:
+    configured = _parse_positive_int_env("OUROBOROS_CONTEXT_SOFT_CAP_TOKENS")
+    if configured is not None:
+        return configured
+
+    context_limit = _parse_positive_int_env("OUROBOROS_MODEL_CONTEXT_TOKENS")
+    if context_limit is None:
+        return 200000
+
+    max_output = _parse_positive_int_env("OUROBOROS_MAX_OUTPUT_TOKENS") or 16384
+    reserve = max(4096, max_output + 8192)
+    return max(32768, context_limit - reserve)
+
+
 def _build_user_content(task: Dict[str, Any]) -> Any:
     """Build user message content. Supports text + optional image."""
     text = task.get("text", "")
@@ -389,7 +417,7 @@ def build_llm_messages(
     ]
 
     # --- Soft-cap token trimming ---
-    messages, cap_info = apply_message_token_soft_cap(messages, 200000)
+    messages, cap_info = apply_message_token_soft_cap(messages, _context_soft_cap_tokens())
 
     return messages, cap_info
 

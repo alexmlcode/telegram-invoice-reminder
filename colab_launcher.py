@@ -280,6 +280,8 @@ git_ops_init(
     branch_stable=BRANCH_STABLE,
 )
 
+import supervisor.tg_listener as _tg_listener
+
 from supervisor.queue import (
     enqueue_task,
     enforce_task_timeouts,
@@ -367,7 +369,28 @@ auto_resume_after_restart()
 
 
 # ----------------------------
-# 6.2) Direct-mode watchdog
+# 6.2) Telethon user-mode listener
+# ----------------------------
+_tg_api_id   = int(os.environ.get("TELEGRAM_API_ID") or 0)
+_tg_api_hash = str(os.environ.get("TELEGRAM_API_HASH") or "")
+_tg_session  = str(os.environ.get("TELEGRAM_SESSION_PATH") or "")
+_tg_owner_id = int(load_state().get("owner_id") or 0) or None
+
+if _tg_api_id and _tg_api_hash and _tg_session:
+    try:
+        _tg_listener.start(
+            session_path=_tg_session,
+            api_id=_tg_api_id,
+            api_hash=_tg_api_hash,
+            owner_tg_id=_tg_owner_id,
+        )
+    except Exception as _e:
+        import logging as _log
+        _log.getLogger(__name__).warning("Failed to start tg_listener: %s", _e)
+
+
+# ----------------------------
+# 6.3) Direct-mode watchdog
 # ----------------------------
 def _chat_watchdog_loop():
     soft_warned = False
@@ -567,6 +590,58 @@ while True:
         except _queue_mod.Empty:
             break
         dispatch_event(evt, _event_ctx)
+
+    # Drain user-mode Telegram messages → user_chat tasks
+    _tg_q = _tg_listener.get_queue()
+    while not _tg_q.empty():
+        try:
+            _tg_evt = _tg_q.get_nowait()
+        except Exception:
+            break
+        _evt_type    = _tg_evt.get("type", "tg_user_message")
+        _sender_id   = _tg_evt.get("sender_id", 0)
+        _sender_name = _tg_evt.get("sender_name", "")
+        _sender_user = _tg_evt.get("sender_username", "")
+        _tg_text     = _tg_evt.get("text", "")
+        _msg_id      = _tg_evt.get("msg_id", 0)
+        _reply_to    = _tg_evt.get("reply_to_msg_id")
+        _who = f"@{_sender_user}" if _sender_user else f"id={_sender_id}"
+
+        if _evt_type == "tg_group_mention":
+            _chat_id    = _tg_evt.get("chat_id", _sender_id)
+            _chat_title = _tg_evt.get("chat_title", "")
+            _reply_hint = f", reply_to={_msg_id}" if _msg_id else ""
+            _task_text = (
+                f"GROUP_MENTION in '{_chat_title}' (chat_id={_chat_id}) "
+                f"from {_sender_name} ({_who}):\n{_tg_text}\n\n"
+                f"Reply in the group: tg_send(entity={_chat_id!r}, message=...{_reply_hint}).\n"
+                f"Use tg_read(entity={_chat_id!r}, limit=15) to get conversation context first.\n"
+                f"Act as a real Telegram user (@alessiper), not a bot assistant."
+            )
+            enqueue_task({
+                "id":          __import__("uuid").uuid4().hex[:8],
+                "type":        "user_chat",
+                "chat_id":     int(load_state().get("owner_chat_id") or 0),
+                "text":        _task_text,
+                "sender_id":   _chat_id,
+                "sender_name": _chat_title,
+            })
+        else:
+            # Private DM
+            _reply_hint = f" Reply to message {_reply_to} if relevant." if _reply_to else ""
+            _task_text = (
+                f"USER_CHAT from {_sender_name} ({_who}):\n{_tg_text}\n\n"
+                f"Reply via tg_send(entity={_sender_id!r}, ...).{_reply_hint} "
+                f"You are acting as @alessiper — a real Telegram personality, not a bot."
+            )
+            enqueue_task({
+                "id":          __import__("uuid").uuid4().hex[:8],
+                "type":        "user_chat",
+                "chat_id":     int(load_state().get("owner_chat_id") or 0),
+                "text":        _task_text,
+                "sender_id":   _sender_id,
+                "sender_name": _sender_name,
+            })
 
     enforce_task_timeouts()
     enqueue_evolution_task_if_needed()

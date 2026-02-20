@@ -28,6 +28,43 @@ def reasoning_rank(value: str) -> int:
     return int(order.get(str(value or "").strip().lower(), 3))
 
 
+def _parse_env_int(name: str, default: int, minimum: int = 0) -> int:
+    raw = os.environ.get(name)
+    if raw is None or str(raw).strip() == "":
+        return default
+    try:
+        value = int(str(raw).strip())
+    except Exception:
+        log.warning("Invalid %s=%r, using default %d", name, raw, default)
+        return default
+    return max(minimum, value)
+
+
+def _parse_env_float(
+    name: str,
+    default: Optional[float] = None,
+    minimum: Optional[float] = None,
+    maximum: Optional[float] = None,
+) -> Optional[float]:
+    raw = os.environ.get(name)
+    if raw is None or str(raw).strip() == "":
+        return default
+    try:
+        value = float(str(raw).strip())
+    except Exception:
+        log.warning("Invalid %s=%r, using default %r", name, raw, default)
+        return default
+    if minimum is not None:
+        value = max(minimum, value)
+    if maximum is not None:
+        value = min(maximum, value)
+    return value
+
+
+def _is_openrouter_base_url(url: Optional[str]) -> bool:
+    return "openrouter.ai" in str(url or "").lower()
+
+
 def add_usage(total: Dict[str, Any], usage: Dict[str, Any]) -> None:
     """Accumulate usage from one LLM call into a running total."""
     for k in ("prompt_tokens", "completion_tokens", "total_tokens", "cached_tokens", "cache_write_tokens"):
@@ -121,6 +158,7 @@ class LLMClient:
     ):
         self._api_key = api_key or os.environ.get("OPENROUTER_API_KEY", "")
         self._base_url = base_url or os.environ.get("OUROBOROS_BASE_URL", "https://openrouter.ai/api/v1")
+        self._is_openrouter = _is_openrouter_base_url(self._base_url)
         self._client = None
 
     def _get_client(self):
@@ -139,6 +177,8 @@ class LLMClient:
 
     def _fetch_generation_cost(self, generation_id: str) -> Optional[float]:
         """Fetch cost from OpenRouter Generation API as fallback."""
+        if not self._is_openrouter or not self._api_key:
+            return None
         try:
             import requests
 
@@ -168,16 +208,35 @@ class LLMClient:
         model: str,
         tools: Optional[List[Dict[str, Any]]] = None,
         reasoning_effort: str = "medium",
-        max_tokens: int = 16384,
+        max_tokens: Optional[int] = None,
+        temperature: Optional[float] = None,
+        top_p: Optional[float] = None,
+        top_k: Optional[int] = None,
         tool_choice: str = "auto",
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         """Single LLM call. Returns: (response_message_dict, usage_dict with cost)."""
         client = self._get_client()
         effort = normalize_reasoning_effort(reasoning_effort)
+        max_tokens_resolved = max_tokens if max_tokens is not None else _parse_env_int(
+            "OUROBOROS_MAX_OUTPUT_TOKENS", 16384, minimum=1
+        )
+        temperature_resolved = (
+            temperature
+            if temperature is not None
+            else _parse_env_float("OUROBOROS_TEMPERATURE", default=None, minimum=0.0, maximum=2.0)
+        )
+        top_p_resolved = (
+            top_p
+            if top_p is not None
+            else _parse_env_float("OUROBOROS_TOP_P", default=None, minimum=0.0, maximum=1.0)
+        )
+        top_k_resolved = top_k if top_k is not None else _parse_env_int("OUROBOROS_TOP_K", 0, minimum=0)
 
         extra_body: Dict[str, Any] = {
             "reasoning": {"effort": effort, "exclude": True},
         }
+        if top_k_resolved > 0 and not self._is_openrouter:
+            extra_body["top_k"] = top_k_resolved
 
         # Pin Anthropic models to Anthropic provider for prompt caching
         if model.startswith("anthropic/"):
@@ -190,9 +249,13 @@ class LLMClient:
         kwargs: Dict[str, Any] = {
             "model": model,
             "messages": messages,
-            "max_tokens": max_tokens,
+            "max_tokens": max_tokens_resolved,
             "extra_body": extra_body,
         }
+        if temperature_resolved is not None:
+            kwargs["temperature"] = temperature_resolved
+        if top_p_resolved is not None:
+            kwargs["top_p"] = top_p_resolved
         if tools:
             # Add cache_control to last tool for Anthropic prompt caching
             # This caches all tool schemas (they never change between calls)

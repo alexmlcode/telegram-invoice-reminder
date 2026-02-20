@@ -21,7 +21,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple, Union
 
-from supervisor.state import load_state, append_jsonl
+from supervisor.state import load_state, save_state, append_jsonl
 from supervisor import git_ops
 from supervisor.telegram import send_with_budget
 
@@ -195,28 +195,56 @@ def auto_resume_after_restart() -> None:
     needed immediately after a restart so the agent doesn't go silent.
     """
     try:
+        enabled = str(os.environ.get("OUROBOROS_AUTO_RESUME_AFTER_RESTART", "1")).strip().lower()
+        if enabled not in {"1", "true", "yes", "on"}:
+            return
+
+        try:
+            resume_window_sec = max(10, int(str(os.environ.get("OUROBOROS_AUTO_RESUME_WINDOW_SEC", "120"))))
+        except Exception:
+            resume_window_sec = 120
+
+        now_utc = datetime.datetime.now(datetime.timezone.utc)
         st = load_state()
         chat_id = st.get("owner_chat_id")
         if not chat_id:
+            return
+
+        session_id = str(st.get("session_id") or "")
+        if session_id and str(st.get("auto_resume_session_id") or "") == session_id:
             return
 
         # Check for recent restart (within 2 minutes)
         restart_verify_path = DRIVE_ROOT / "state" / "pending_restart_verify.json"
         recent_restart = False
         if restart_verify_path.exists():
-            recent_restart = True
+            try:
+                mtime = datetime.datetime.fromtimestamp(
+                    restart_verify_path.stat().st_mtime, tz=datetime.timezone.utc
+                )
+                recent_restart = (now_utc - mtime).total_seconds() <= resume_window_sec
+            except Exception:
+                # If metadata is unavailable, keep conservative behavior.
+                recent_restart = True
         else:
             # Check supervisor.jsonl for recent restart event
             sup_log = DRIVE_ROOT / "logs" / "supervisor.jsonl"
             if sup_log.exists():
                 try:
                     lines = sup_log.read_text(encoding="utf-8").strip().split("\n")
-                    for line in reversed(lines[-20:]):
+                    for line in reversed(lines[-200:]):
                         if not line.strip():
                             continue
                         evt = json.loads(line)
                         if evt.get("type") in ("launcher_start", "restart"):
-                            recent_restart = True
+                            ts_raw = str(evt.get("ts") or "")
+                            try:
+                                ts = datetime.datetime.fromisoformat(ts_raw)
+                                if ts.tzinfo is None:
+                                    ts = ts.replace(tzinfo=datetime.timezone.utc)
+                                recent_restart = (now_utc - ts).total_seconds() <= resume_window_sec
+                            except Exception:
+                                recent_restart = False
                             break
                 except Exception:
                     log.debug("Suppressed exception", exc_info=True)
@@ -262,6 +290,10 @@ def auto_resume_after_restart() -> None:
                     "type": "auto_resume_triggered",
                 },
             )
+            st2 = load_state()
+            if st2.get("session_id"):
+                st2["auto_resume_session_id"] = st2.get("session_id")
+                save_state(st2)
     except Exception as e:
         append_jsonl(DRIVE_ROOT / "logs" / "supervisor.jsonl", {
             "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
@@ -584,5 +616,4 @@ def ensure_workers_healthy() -> None:
         # Kill all workers — direct chat via handle_chat_direct still works
         kill_workers()
         CRASH_TS.clear()
-
 
