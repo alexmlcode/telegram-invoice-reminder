@@ -11,6 +11,21 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 log = logging.getLogger(__name__)
 
 
+# Suppress known-noisy Telethon warnings that are cosmetic bugs in v1.42.0
+class _TelethonFilter(logging.Filter):
+    _SUPPRESS = (
+        "missing message mapping",
+        "Task was destroyed but it is pending",
+    )
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        msg = record.getMessage()
+        return not any(s in msg for s in self._SUPPRESS)
+
+
+logging.getLogger("telethon").addFilter(_TelethonFilter())
+
+
 # ----------------------------
 # 0) Install launcher deps
 # ----------------------------
