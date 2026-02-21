@@ -60,7 +60,7 @@ class BackgroundConsciousness:
         self._thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
         self._wakeup_event = threading.Event()
-        self._next_wakeup_sec: float = 300.0
+        self._next_wakeup_sec: float = 60.0
         self._wakeup_counter: int = 0
         self._observations: queue.Queue = queue.Queue()
         self._deferred_events: list = []
@@ -154,7 +154,7 @@ class BackgroundConsciousness:
                     "traceback": traceback.format_exc()[:1500],
                 })
                 self._next_wakeup_sec = min(
-                    self._next_wakeup_sec * 2, 1800
+                    self._next_wakeup_sec * 2, 300
                 )
 
     def _check_budget(self) -> bool:
@@ -402,7 +402,7 @@ class BackgroundConsciousness:
 
         # Register consciousness-specific tool (modifies self._next_wakeup_sec)
         def _set_next_wakeup(ctx: Any, seconds: int = 300) -> str:
-            self._next_wakeup_sec = max(60, min(3600, int(seconds)))
+            self._next_wakeup_sec = max(30, min(300, int(seconds)))
             return f"OK: next wakeup in {self._next_wakeup_sec}s"
 
         registry.register(ToolEntry("set_next_wakeup", {
