@@ -478,6 +478,89 @@ def reset_chat_agent():
 
 
 # ----------------------------
+# 6.4) Telethon event drain thread
+# ----------------------------
+# tg_listener puts DMs/mentions in _listener_queue the moment Telethon receives
+# them (async, real-time).  The main loop used to drain that queue — but it can
+# be blocked for up to 10s by TG.get_updates(timeout=10) in idle mode.
+# This thread checks every 100ms independently, guaranteeing sub-200ms latency
+# from Telethon receive → user_chat task enqueued → worker assigned.
+
+def _process_tg_event(evt: dict) -> None:
+    """Convert one tg_listener event to a user_chat task and assign it."""
+    _evt_type    = evt.get("type", "tg_user_message")
+    _sender_id   = evt.get("sender_id", 0)
+    _sender_name = evt.get("sender_name", "")
+    _sender_user = evt.get("sender_username", "")
+    _tg_text     = evt.get("text", "")
+    _msg_id      = evt.get("msg_id", 0)
+    _reply_to    = evt.get("reply_to_msg_id")
+    _who = f"@{_sender_user}" if _sender_user else f"id={_sender_id}"
+
+    if _evt_type == "tg_group_mention":
+        _chat_id    = evt.get("chat_id", _sender_id)
+        _chat_title = evt.get("chat_title", "")
+        _reply_hint = f", reply_to={_msg_id}" if _msg_id else ""
+        _task_text = (
+            f"GROUP_MENTION in '{_chat_title}' (chat_id={_chat_id}) "
+            f"from {_sender_name} ({_who}):\n{_tg_text}\n\n"
+            f"Reply in the group: tg_send(entity={_chat_id!r}, message=...{_reply_hint}).\n"
+            f"Use tg_read(entity={_chat_id!r}, limit=15) to get conversation context first.\n"
+            f"Act as a real Telegram user (@alessiper), not a bot assistant."
+        )
+        enqueue_task({
+            "id":          uuid.uuid4().hex[:8],
+            "type":        "user_chat",
+            "chat_id":     int(load_state().get("owner_chat_id") or 0),
+            "text":        _task_text,
+            "sender_id":   _chat_id,
+            "sender_name": _chat_title,
+        })
+    else:
+        _reply_hint = f" Reply to message {_reply_to} if relevant." if _reply_to else ""
+        _task_text = (
+            f"USER_CHAT from {_sender_name} ({_who}):\n{_tg_text}\n\n"
+            f"Reply via tg_send(entity={_sender_id!r}, ...).{_reply_hint} "
+            f"You are acting as @alessiper — a real Telegram personality, not a bot."
+        )
+        enqueue_task({
+            "id":          uuid.uuid4().hex[:8],
+            "type":        "user_chat",
+            "chat_id":     int(load_state().get("owner_chat_id") or 0),
+            "text":        _task_text,
+            "sender_id":   _sender_id,
+            "sender_name": _sender_name,
+        })
+    assign_tasks()
+
+
+def _tg_drain_loop() -> None:
+    """Drain tg_listener event queue every 100ms.
+
+    Runs independently of the bot-API long-poll so DMs and group mentions
+    are picked up within ~100ms even when the supervisor is idle.
+    """
+    while True:
+        time.sleep(0.1)
+        try:
+            tg_q = _tg_listener.get_queue()
+            while not tg_q.empty():
+                try:
+                    evt = tg_q.get_nowait()
+                except Exception:
+                    break
+                try:
+                    _process_tg_event(evt)
+                except Exception:
+                    log.warning("tg-drain: failed to process event", exc_info=True)
+        except Exception:
+            log.warning("tg-drain thread error", exc_info=True)
+
+
+threading.Thread(target=_tg_drain_loop, daemon=True, name="tg-drain").start()
+
+
+# ----------------------------
 # 7) Main loop
 # ----------------------------
 import types
@@ -606,58 +689,7 @@ while True:
             break
         dispatch_event(evt, _event_ctx)
 
-    # Drain user-mode Telegram messages → user_chat tasks
-    _tg_q = _tg_listener.get_queue()
-    while not _tg_q.empty():
-        try:
-            _tg_evt = _tg_q.get_nowait()
-        except Exception:
-            break
-        _evt_type    = _tg_evt.get("type", "tg_user_message")
-        _sender_id   = _tg_evt.get("sender_id", 0)
-        _sender_name = _tg_evt.get("sender_name", "")
-        _sender_user = _tg_evt.get("sender_username", "")
-        _tg_text     = _tg_evt.get("text", "")
-        _msg_id      = _tg_evt.get("msg_id", 0)
-        _reply_to    = _tg_evt.get("reply_to_msg_id")
-        _who = f"@{_sender_user}" if _sender_user else f"id={_sender_id}"
-
-        if _evt_type == "tg_group_mention":
-            _chat_id    = _tg_evt.get("chat_id", _sender_id)
-            _chat_title = _tg_evt.get("chat_title", "")
-            _reply_hint = f", reply_to={_msg_id}" if _msg_id else ""
-            _task_text = (
-                f"GROUP_MENTION in '{_chat_title}' (chat_id={_chat_id}) "
-                f"from {_sender_name} ({_who}):\n{_tg_text}\n\n"
-                f"Reply in the group: tg_send(entity={_chat_id!r}, message=...{_reply_hint}).\n"
-                f"Use tg_read(entity={_chat_id!r}, limit=15) to get conversation context first.\n"
-                f"Act as a real Telegram user (@alessiper), not a bot assistant."
-            )
-            enqueue_task({
-                "id":          __import__("uuid").uuid4().hex[:8],
-                "type":        "user_chat",
-                "chat_id":     int(load_state().get("owner_chat_id") or 0),
-                "text":        _task_text,
-                "sender_id":   _chat_id,
-                "sender_name": _chat_title,
-            })
-        else:
-            # Private DM
-            _reply_hint = f" Reply to message {_reply_to} if relevant." if _reply_to else ""
-            _task_text = (
-                f"USER_CHAT from {_sender_name} ({_who}):\n{_tg_text}\n\n"
-                f"Reply via tg_send(entity={_sender_id!r}, ...).{_reply_hint} "
-                f"You are acting as @alessiper — a real Telegram personality, not a bot."
-            )
-            enqueue_task({
-                "id":          __import__("uuid").uuid4().hex[:8],
-                "type":        "user_chat",
-                "chat_id":     int(load_state().get("owner_chat_id") or 0),
-                "text":        _task_text,
-                "sender_id":   _sender_id,
-                "sender_name": _sender_name,
-            })
-
+    # tg_listener events are drained by the _tg_drain_loop background thread (100ms cycle).
     enforce_task_timeouts()
     enqueue_evolution_task_if_needed()
     enqueue_scout_task_if_needed()
