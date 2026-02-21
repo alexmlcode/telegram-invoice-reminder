@@ -218,7 +218,7 @@ class LLMClient:
         client = self._get_client()
         effort = normalize_reasoning_effort(reasoning_effort)
         max_tokens_resolved = max_tokens if max_tokens is not None else _parse_env_int(
-            "OUROBOROS_MAX_OUTPUT_TOKENS", 16384, minimum=1
+            "OUROBOROS_MAX_OUTPUT_TOKENS", 65536, minimum=1
         )
         temperature_resolved = (
             temperature
