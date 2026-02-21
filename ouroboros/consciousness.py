@@ -39,7 +39,7 @@ log = logging.getLogger(__name__)
 class BackgroundConsciousness:
     """Persistent background thinking loop for Ouroboros."""
 
-    _MAX_BG_ROUNDS = 5
+    _MAX_BG_ROUNDS = 8
 
     def __init__(
         self,
@@ -61,6 +61,7 @@ class BackgroundConsciousness:
         self._stop_event = threading.Event()
         self._wakeup_event = threading.Event()
         self._next_wakeup_sec: float = 300.0
+        self._wakeup_counter: int = 0
         self._observations: queue.Queue = queue.Queue()
         self._deferred_events: list = []
 
@@ -174,6 +175,7 @@ class BackgroundConsciousness:
 
     def _think(self) -> None:
         """One thinking cycle: build context, call LLM, execute tools iteratively."""
+        self._wakeup_counter += 1
         context = self._build_context()
         model = self._model
 
@@ -338,6 +340,7 @@ class BackgroundConsciousness:
 
         # Runtime info + state
         runtime_lines = [f"UTC: {utc_now_iso()}"]
+        runtime_lines.append(f"wakeup_count: {self._wakeup_counter}  (use wakeup_count % 3 to pick thinking mode)")
         runtime_lines.append(f"BG budget spent: ${self._bg_spent_usd:.4f}")
         runtime_lines.append(f"Current wakeup interval: {self._next_wakeup_sec}s")
 
@@ -372,15 +375,18 @@ class BackgroundConsciousness:
         # Knowledge base
         "knowledge_read", "knowledge_write", "knowledge_list",
         # Read-only tools for awareness
-        "web_search", "repo_read", "repo_list", "drive_read", "drive_list",
-        "chat_history",
+        "web_search", "browse_page", "repo_read", "repo_list", "drive_read", "drive_list",
+        "chat_history", "gdelt_search",
         # GitHub Issues
         "list_github_issues", "get_github_issue",
         # Evolution scouting — search GitHub and analyse external repos
         "github_search",
         "external_repo_sync", "external_repo_list", "external_repo_read",
-        # Telegram user-mode — NOT in background: tg_listener owns the session
-        # tg_send/tg_read create a competing Telethon client → database locks
+        # Telegram user-mode — safe in background: tools use command queue bridge
+        # (telegram_bot.py sends commands to tg_listener via multiprocessing.Queue,
+        #  no direct Telethon connection → zero SQLite locking)
+        "tg_send", "tg_read", "tg_get_me", "tg_get_entity",
+        "tg_list_chats", "tg_search", "tg_join", "tg_connect",
         # Email — read, search, send, reply
         "email_read", "email_search", "email_send", "email_reply",
         # LinkedIn
