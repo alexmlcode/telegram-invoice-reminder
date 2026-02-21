@@ -21,6 +21,37 @@ from typing import Any, Dict, Optional
 
 log = logging.getLogger(__name__)
 
+
+def _patch_telethon_sqlite() -> None:
+    """Patch Telethon's SQLiteSession to use WAL journal + 10s busy timeout.
+
+    WAL mode allows concurrent readers while one writer is active, greatly
+    reducing 'database is locked' errors when tg_listener and agent tools
+    both open the same session file from different processes.
+    """
+    try:
+        from telethon.sessions import sqlite as _tl_sq
+        _orig_cursor = _tl_sq.SQLiteSession._cursor
+
+        def _patched_cursor(self):
+            cursor = _orig_cursor(self)
+            if getattr(self, "_wal_patched", False):
+                return cursor
+            try:
+                self._conn.execute("PRAGMA journal_mode=WAL")
+                self._conn.execute("PRAGMA busy_timeout=10000")
+            except Exception:
+                pass
+            self._wal_patched = True
+            return cursor
+
+        _tl_sq.SQLiteSession._cursor = _patched_cursor
+    except Exception as e:
+        log.debug("Telethon WAL patch skipped: %s", e)
+
+
+_patch_telethon_sqlite()
+
 _listener_queue: queue.Queue = queue.Queue()
 _listener_thread: Optional[threading.Thread] = None
 _stop_event = threading.Event()
