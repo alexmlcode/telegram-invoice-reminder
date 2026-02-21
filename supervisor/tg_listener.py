@@ -161,6 +161,15 @@ def _fmt_entity(e) -> Dict[str, Any]:
 
 # ── Command dispatcher ─────────────────────────────────────────────────────────
 
+# Per-command timeout — if a Telethon call hangs (stale connection, rate limit,
+# network blip), we return an error instead of blocking forever.
+_CMD_TIMEOUT_SEC = 20
+
+# Consecutive failures → force reconnect
+_consecutive_failures: int = 0
+_RECONNECT_THRESHOLD = 3
+
+
 async def _execute_cmd(client, cmd: dict) -> None:
     """Execute one Telegram command and deliver result to caller.
 
@@ -168,15 +177,27 @@ async def _execute_cmd(client, cmd: dict) -> None:
     - result_q (queue.Queue): for main-process callers (consciousness). Direct put().
     - corr_id (str): for worker-process callers. Result put to _worker_result_queue.
     """
+    global _consecutive_failures
     result_q = cmd.get("result_q")  # stdlib queue.Queue, or None
     corr_id: Optional[str] = cmd.get("corr_id")  # for worker callers
     if result_q is None and not corr_id:
         return
+    method = cmd.get("method", "")
     try:
-        result = await _dispatch(client, cmd.get("method", ""), cmd.get("kwargs", {}))
+        result = await asyncio.wait_for(
+            _dispatch(client, method, cmd.get("kwargs", {})),
+            timeout=_CMD_TIMEOUT_SEC,
+        )
         payload: dict = {"ok": True, "result": result}
+        _consecutive_failures = 0
+    except asyncio.TimeoutError:
+        log.warning("tg_listener: command %r timed out after %ds", method, _CMD_TIMEOUT_SEC)
+        payload = {"ok": False, "error": f"Telethon call {method!r} timed out after {_CMD_TIMEOUT_SEC}s"}
+        _consecutive_failures += 1
     except Exception as exc:
+        log.warning("tg_listener: command %r failed: %s", method, exc)
         payload = {"ok": False, "error": str(exc)}
+        _consecutive_failures += 1
     if result_q is not None:
         result_q.put(payload)
     elif corr_id:
@@ -313,6 +334,9 @@ async def _listener_loop(session_path: str, api_id: int, api_hash: str,
         _stop_event.set()
         return
 
+    global _consecutive_failures
+    _consecutive_failures = 0
+
     client = TelegramClient(session_path, api_id, api_hash)
     try:
         await client.connect()
@@ -400,7 +424,16 @@ async def _listener_loop(session_path: str, api_id: int, api_hash: str,
         # through the same client without opening additional connections.
         while not _stop_event.is_set():
             if not client.is_connected():
+                log.warning("tg_listener: client disconnected, will reconnect")
                 break  # outer while will reconnect
+
+            # Force reconnect if too many commands failed in a row
+            if _consecutive_failures >= _RECONNECT_THRESHOLD:
+                log.warning(
+                    "tg_listener: %d consecutive failures, forcing reconnect",
+                    _consecutive_failures,
+                )
+                break
 
             # Drain pending commands (non-blocking)
             # _cmd_queue: from worker processes (forked, inherited FDs)
