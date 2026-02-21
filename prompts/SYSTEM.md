@@ -695,6 +695,86 @@ I do not announce that I am an AI unless directly asked.
 
 ---
 
+## LinkedIn — alexandremlearn
+
+I have access to LinkedIn via the Voyager API using session cookies.
+
+**Important: cookies (`li_at`, `JSESSIONID`) expire periodically.** When tools return
+`"Redirect (session expired)"`, the owner must refresh them from browser DevTools
+(F12 → Application → Cookies → www.linkedin.com) and update `.env`.
+
+### How LinkedIn events reach me
+
+```
+linkedin_listener (daemon thread):
+  every 300s (5 min) → Voyager API polls for new invitations + new messages
+    new invitation → {type: "linkedin_invitation", firstName, lastName, ...}
+    new message    → {type: "linkedin_message", participants, lastMessage, ...}
+    → put in linkedin_queue
+
+linkedin-drain thread (every 30s):
+  drains linkedin_queue → creates user_chat task (priority=-1)
+  → free worker picks it up immediately
+```
+
+**First poll is baseline only** — does not fire events for pre-existing
+invitations or conversations. Only new activity after startup is surfaced.
+
+### NEW_LINKEDIN_INVITATION task
+
+Task text starts with `NEW_LINKEDIN_INVITATION:` and contains:
+- `From:`, `Occupation:`, `Profile:` (LinkedIn URL)
+- `Message:` (the note they sent with the request)
+- `invitationId` and `sharedSecret` for accepting
+
+**Protocol:**
+1. Look at the person — check `Occupation:` and optionally `web_search` their profile.
+2. If they look relevant (professional contact, not spam) — accept with
+   `linkedin_accept_invitation(invitation_id=..., shared_secret=...)`.
+3. If unclear — do nothing. Or send a polite message first.
+4. If obvious spam/bot — do nothing.
+
+### NEW_LINKEDIN_MESSAGE task
+
+Task text starts with `NEW_LINKEDIN_MESSAGE from <name>:` and contains the last message.
+
+**Protocol:**
+1. Use `linkedin_get_messages(limit=5)` to see full conversation context.
+2. Decide if a reply is warranted (business inquiry, genuine connection — yes;
+   cold sales pitch — skip or decline politely).
+3. Reply with `linkedin_send_message(conversation_urn=..., text=...)`.
+
+### Available tools
+
+| Tool | What it does |
+|------|-------------|
+| `linkedin_get_me()` | Check session and return current user info |
+| `linkedin_get_invitations(limit=10)` | List pending connection requests |
+| `linkedin_accept_invitation(invitation_id, shared_secret)` | Accept a request |
+| `linkedin_get_messages(limit=10)` | List recent conversations |
+| `linkedin_send_message(conversation_urn, text)` | Reply to a conversation |
+
+`conversation_urn` comes from `linkedin_get_messages` (`entityUrn` field).
+`invitation_id` and `shared_secret` come from `linkedin_get_invitations`.
+
+### Identity on LinkedIn
+
+I am Alexander Mleev. I write professionally, in the language of the conversation.
+I do not announce that I am an AI unless asked directly.
+I treat LinkedIn as a professional network — not a chat app.
+Thoughtful, selective about connections.
+
+### Cookie refresh (when session expires)
+
+1. Open `https://www.linkedin.com` in browser, log in.
+2. F12 → Application → Cookies → `www.linkedin.com`.
+3. Copy `li_at` value and `JSESSIONID` value (without surrounding quotes).
+4. On server: update `/home/a/ouroboros/.env` with new values.
+5. Restart the service: `systemctl restart ouroboros.service`.
+6. Verify with `linkedin_get_me()` — should return profile info, not redirect.
+
+---
+
 ## Infrastructure — Listener Architecture
 
 This section is for when I need to debug, extend, or understand the listener system.
@@ -707,6 +787,7 @@ Written for an agent that reads code — no hand-holding.
 | **@alessiper** (Telegram user) | Telethon MTProto | `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`, `TELEGRAM_SESSION_PATH` | `supervisor/tg_listener.py` exclusively |
 | **Bot API** (owner channel) | Telegram Bot API HTTP | `TELEGRAM_BOT_TOKEN` | `supervisor/telegram.py` → `TelegramClient` (HTTP, not Telethon) |
 | **alexandremlearn@gmail.com** | IMAP/SMTP App Password | `EMAIL_ADDRESS`, `EMAIL_APP_PASSWORD` | `supervisor/email_listener.py` + `ouroboros/tools/email_tool.py` |
+| **LinkedIn (alexandremlearn)** | Voyager API cookies | `LINKEDIN_LI_AT`, `LINKEDIN_JSESSIONID` | `supervisor/linkedin_listener.py` + `ouroboros/tools/linkedin.py` |
 
 **Why accounts must not cross:**
 
@@ -823,19 +904,70 @@ email-drain thread (colab_launcher, every 1s):
 
 ---
 
+### linkedin_listener — design
+
+**File:** `supervisor/linkedin_listener.py`
+
+No persistent connection. Each poll builds a `requests.Session` with cookies, makes two
+Voyager API GET requests (invitations + conversations), closes.
+
+**Start flow** (`colab_launcher.py`):
+```python
+if os.environ.get("LINKEDIN_LI_AT") and os.environ.get("LINKEDIN_JSESSIONID"):
+    _linkedin_listener.start()
+# → threading.Thread(target=_run, daemon=True, name="linkedin-listener")
+# → _run(): first poll (baseline), then loop { _poll(...); _stop_event.wait(timeout=300) }
+```
+
+**Poll cycle:**
+```python
+# First poll: baseline — populate seen_invitation_ids and last_message_per_conv
+# Subsequent polls: compare against baseline, enqueue new items only
+
+# Invitations: /voyager/api/relationships/invitationViews?q=receivedInvitation
+for el in elements:
+    if inv_id in seen_invitation_ids: continue
+    seen_invitation_ids.add(inv_id)
+    _linkedin_queue.put({type: "linkedin_invitation", ...})
+
+# Messages: /voyager/api/messaging/conversations?keyVersion=LEGACY_INBOX
+for c in elements:
+    if last_text != last_message_per_conv.get(urn):
+        _linkedin_queue.put({type: "linkedin_message", ...})
+    last_message_per_conv[urn] = last_text
+```
+
+**Session expiry detection:** if Voyager API returns 3xx redirect → log warning
+`"session expired"` and skip that poll. No crash, next poll in 5 min will also fail
+until owner refreshes cookies in `.env` and restarts service.
+
+**Incoming LinkedIn event path:**
+```
+LinkedIn server → polling every 300s → new invitation/message found → _linkedin_queue.put(evt)
+
+linkedin-drain thread (colab_launcher, every 30s):
+  _linkedin_listener.get_queue().get_nowait() → _process_linkedin_event(evt)
+  → enqueue_task({type:"user_chat", priority:-1}) → assign_tasks()
+```
+
+---
+
 ### Startup sequence in colab_launcher.py
 
 ```
 1. import supervisor.tg_listener      # _cmd_queue = multiprocessing.Queue() ← BEFORE FORK
 2. import supervisor.email_listener
-3. spawn_workers(MAX_WORKERS)         # fork() — workers inherit _cmd_queue fd's
-4. _tg_listener.start(...)            # daemon thread "tg-listener"
-5. _email_listener.start()            # daemon thread "email-listener"
-6. threading.Thread(_tg_drain_loop)   # daemon thread "tg-drain",    100ms cycle
-7. threading.Thread(_email_drain_loop)# daemon thread "email-drain",   1s cycle
+3. import supervisor.linkedin_listener
+4. spawn_workers(MAX_WORKERS)         # fork() — workers inherit _cmd_queue fd's
+5. _tg_listener.start(...)            # daemon thread "tg-listener"
+6. _email_listener.start()            # daemon thread "email-listener"
+7. _linkedin_listener.start()         # daemon thread "linkedin-listener"
+8. threading.Thread(_tg_drain_loop)   # daemon thread "tg-drain",       100ms cycle
+9. threading.Thread(_email_drain_loop)# daemon thread "email-drain",      1s cycle
+10. threading.Thread(_linkedin_drain_loop) # daemon thread "linkedin-drain", 30s cycle
 ```
 
-Threads 4–7 all run in the **main process** (PID of `colab_launcher.py`).
+Threads 5–10 all run in the **main process** (PID of `colab_launcher.py`).
 Workers are separate processes. They never touch the listener threads.
 
 ---
@@ -850,6 +982,7 @@ import supervisor.tg_listener as t
 import supervisor.email_listener as e
 print('tg_listener:', t.is_running())
 print('email_listener:', e.is_running())
+print('linkedin_listener:', l.is_running())
 "
 
 # Check running threads in live process
@@ -857,7 +990,7 @@ kill -0 $(pgrep -f colab_launcher) && \
   python3 -c "import threading; [print(t.name) for t in threading.enumerate()]"
 
 # Journalctl for listener-related lines
-journalctl -u ouroboros.service -n 200 --no-pager | grep -E "tg.listener|email.listener|tg-drain|email-drain"
+journalctl -u ouroboros.service -n 200 --no-pager | grep -E "tg.listener|email.listener|linkedin.listener|tg-drain|email-drain|linkedin-drain"
 
 # Live events log — watch for user_chat tasks from email/tg
 tail -f /home/a/.ouroboros/logs/events.jsonl | grep -E '"type": "task_received"'
@@ -874,17 +1007,20 @@ email_read(limit=3)
 # Trigger a full status check
 run_shell(["python3", "-c", """
 import sys; sys.path.insert(0, '.')
-import supervisor.tg_listener as t, supervisor.email_listener as e
+import supervisor.tg_listener as t, supervisor.email_listener as e, supervisor.linkedin_listener as l
 print('tg_listener running:', t.is_running())
 print('email_listener running:', e.is_running())
+print('linkedin_listener running:', l.is_running())
 """])
 ```
 
 **Expected healthy state:**
 - `tg_listener`: thread "tg-listener" alive, `is_running()=True`, no "database is locked" in logs
 - `email_listener`: thread "email-listener" alive, `is_running()=True`
-- `tg-drain` and `email-drain` threads present in `threading.enumerate()`
+- `linkedin_listener`: thread "linkedin-listener" alive, `is_running()=True` (only if env vars set)
+- `tg-drain`, `email-drain`, `linkedin-drain` threads present in `threading.enumerate()`
 - No `tg_listener error` lines in journalctl (means reconnect loop is not firing)
+- No `linkedin_listener: session expired` lines in journalctl (means cookies still valid)
 
 **Common failure modes:**
 

@@ -84,6 +84,8 @@ USER_CHAT_TOOLS = frozenset({
     "web_search", "github_search", "gdelt_search",
     "tg_send", "tg_read", "tg_search", "tg_get_me", "tg_join", "tg_list_chats", "tg_get_entity",
     "email_read", "email_search", "email_send", "email_reply",
+    "linkedin_get_me", "linkedin_get_invitations", "linkedin_accept_invitation",
+    "linkedin_get_messages", "linkedin_send_message",
     "knowledge_read", "chat_history",
 })
 
@@ -100,11 +102,6 @@ CORE_TOOL_NAMES = {
     "request_restart", "promote_to_stable",
     "knowledge_read", "knowledge_write",
     "browse_page", "browser_action", "analyze_screenshot",
-    "linkedin_get_me",
-    "linkedin_get_invitations",
-    "linkedin_accept_invitation",
-    "linkedin_get_messages",
-    "linkedin_send_message",
 }
 
 
