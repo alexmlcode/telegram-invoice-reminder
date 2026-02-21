@@ -385,7 +385,7 @@ class BackgroundConsciousness:
         "email_read", "email_search", "email_send", "email_reply",
         # LinkedIn
         "linkedin_get_me", "linkedin_get_invitations", "linkedin_accept_invitation",
-        "linkedin_get_messages", "linkedin_send_message",
+        "linkedin_get_messages", "linkedin_send_message", "linkedin_refresh_cookies",
     })
 
     def _build_registry(self) -> "ToolRegistry":

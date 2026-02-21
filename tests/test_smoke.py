@@ -125,6 +125,7 @@ EXPECTED_TOOLS = [
     # LinkedIn
     "linkedin_get_me", "linkedin_get_invitations", "linkedin_accept_invitation",
     "linkedin_get_messages", "linkedin_send_message",
+    "linkedin_refresh_cookies",
 ]
 
 

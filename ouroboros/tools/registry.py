@@ -85,7 +85,7 @@ USER_CHAT_TOOLS = frozenset({
     "tg_send", "tg_read", "tg_search", "tg_get_me", "tg_join", "tg_list_chats", "tg_get_entity",
     "email_read", "email_search", "email_send", "email_reply",
     "linkedin_get_me", "linkedin_get_invitations", "linkedin_accept_invitation",
-    "linkedin_get_messages", "linkedin_send_message",
+    "linkedin_get_messages", "linkedin_send_message", "linkedin_refresh_cookies",
     "knowledge_read", "chat_history",
 })
 

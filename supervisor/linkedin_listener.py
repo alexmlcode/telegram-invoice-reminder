@@ -100,8 +100,12 @@ def _get_session():
         return None, "requests not installed"
 
 
+_session_expired = False  # flag so _run() knows to trigger refresh
+
+
 def _api_get(path: str, params: Dict = None) -> Optional[Dict]:
     """GET Voyager API. Returns parsed JSON dict, or None on error/redirect."""
+    global _session_expired
     s, err = _get_session()
     if err:
         return None
@@ -109,12 +113,12 @@ def _api_get(path: str, params: Dict = None) -> Optional[Dict]:
         r = s.get(f"https://www.linkedin.com{path}", params=params,
                   allow_redirects=False, timeout=15)
         if r.status_code in (301, 302, 303, 307, 308):
-            log.warning("linkedin_listener: session expired (redirect). "
-                        "Update LINKEDIN_LI_AT and LINKEDIN_JSESSIONID.")
+            _session_expired = True
             return None
         if r.status_code != 200:
             log.debug("linkedin_listener: API status %d for %s", r.status_code, path)
             return None
+        _session_expired = False
         return r.json()
     except Exception as e:
         log.debug("linkedin_listener: request error: %s", e)
@@ -124,16 +128,36 @@ def _api_get(path: str, params: Dict = None) -> Optional[Dict]:
 # ── Main polling loop ─────────────────────────────────────────────────────────
 
 def _run() -> None:
+    global _session_expired
     seen_invitation_ids: Set[str] = set()
     # conversation_urn → last message text (to detect new messages)
     last_message_per_conv: Dict[str, str] = {}
     first_poll = True
 
     while not _stop_event.is_set():
+        _session_expired = False
         try:
             _poll(seen_invitation_ids, last_message_per_conv, first_poll)
         except Exception as e:
             log.warning("linkedin_listener: poll error: %s", e)
+
+        if _session_expired:
+            log.warning("linkedin_listener: session expired — attempting auto-refresh")
+            try:
+                from supervisor.linkedin_cookie_refresh import refresh_cookies
+                ok = refresh_cookies()
+                if ok:
+                    log.info("linkedin_listener: cookies refreshed — retrying poll")
+                    _session_expired = False
+                    try:
+                        _poll(seen_invitation_ids, last_message_per_conv, first_poll)
+                    except Exception as e:
+                        log.warning("linkedin_listener: retry poll error: %s", e)
+                else:
+                    log.error("linkedin_listener: auto-refresh failed — check LINKEDIN_EMAIL/PASSWORD")
+            except Exception as e:
+                log.error("linkedin_listener: auto-refresh exception: %s", e)
+
         first_poll = False
         _stop_event.wait(timeout=POLL_INTERVAL_SEC)
 
