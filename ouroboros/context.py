@@ -680,7 +680,7 @@ def compact_tool_history_llm(messages: list, keep_recent: int = 6) -> list:
             messages=[{"role": "user", "content": prompt}],
             model=light_model,
             reasoning_effort="low",
-            max_tokens=1024,
+            max_tokens=4096,
         )
         summary_text = resp_msg.get("content") or ""
         if not summary_text.strip():

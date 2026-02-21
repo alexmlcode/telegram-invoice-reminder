@@ -199,7 +199,7 @@ class BackgroundConsciousness:
                     model=model,
                     tools=tools,
                     reasoning_effort="low",
-                    max_tokens=2048,
+                    max_tokens=8192,
                 )
                 cost = float(usage.get("cost") or 0)
                 total_cost += cost
