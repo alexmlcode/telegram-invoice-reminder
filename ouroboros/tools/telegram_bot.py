@@ -74,7 +74,6 @@ def _tg_exec(method: str, timeout: float = 30, **kwargs) -> Any:
         get_cmd_queue().put({"method": method, "kwargs": kwargs, "corr_id": corr_id})
         wrq = get_worker_result_queue()
         deadline = time.monotonic() + timeout
-        pending: list = []
         resp = None
         while time.monotonic() < deadline:
             remaining = deadline - time.monotonic()
@@ -83,14 +82,15 @@ def _tg_exec(method: str, timeout: float = 30, **kwargs) -> Any:
                 if item.get("corr_id") == corr_id:
                     resp = item
                     break
-                pending.append(item)  # belongs to another worker
+                # Belongs to another worker — put back immediately so they can find it.
+                # Do NOT hold in a pending list: that causes livelock when workers run
+                # concurrently (each holds the other's result until their own deadline).
+                try:
+                    wrq.put_nowait(item)
+                except Exception:
+                    pass
             except _stdlib_queue.Empty:
-                break
-        for p in pending:
-            try:
-                wrq.put_nowait(p)
-            except Exception:
-                pass
+                continue  # keep polling until deadline; don't give up early
         if resp is None:
             raise RuntimeError(
                 "Telegram service did not respond in time "
