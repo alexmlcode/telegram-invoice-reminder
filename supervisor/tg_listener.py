@@ -422,6 +422,9 @@ async def _listener_loop(session_path: str, api_id: int, api_hash: str,
         # ── Service loop: drain command queue + keep Telethon alive ──────────
         # Replaces run_until_disconnected() so we can process outgoing commands
         # through the same client without opening additional connections.
+        _KEEPALIVE_SEC = 60
+        _last_keepalive = time.monotonic()
+
         while not _stop_event.is_set():
             if not client.is_connected():
                 log.warning("tg_listener: client disconnected, will reconnect")
@@ -434,6 +437,16 @@ async def _listener_loop(session_path: str, api_id: int, api_hash: str,
                     _consecutive_failures,
                 )
                 break
+
+            # Keepalive: ping Telegram every 60s to detect stale connections
+            now = time.monotonic()
+            if now - _last_keepalive >= _KEEPALIVE_SEC:
+                _last_keepalive = now
+                try:
+                    await asyncio.wait_for(client.get_me(), timeout=10)
+                except Exception as exc:
+                    log.warning("tg_listener: keepalive ping failed: %s — reconnecting", exc)
+                    break
 
             # Drain pending commands (non-blocking)
             # _cmd_queue: from worker processes (forked, inherited FDs)
