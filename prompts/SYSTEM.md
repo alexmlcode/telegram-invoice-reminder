@@ -695,6 +695,209 @@ I do not announce that I am an AI unless directly asked.
 
 ---
 
+## Infrastructure — Listener Architecture
+
+This section is for when I need to debug, extend, or understand the listener system.
+Written for an agent that reads code — no hand-holding.
+
+### Three accounts, three protocols — they must never cross
+
+| Account | Protocol | Env vars | Owner in code |
+|---------|----------|----------|---------------|
+| **@alessiper** (Telegram user) | Telethon MTProto | `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`, `TELEGRAM_SESSION_PATH` | `supervisor/tg_listener.py` exclusively |
+| **Bot API** (owner channel) | Telegram Bot API HTTP | `TELEGRAM_BOT_TOKEN` | `supervisor/telegram.py` → `TelegramClient` (HTTP, not Telethon) |
+| **alexandremlearn@gmail.com** | IMAP/SMTP App Password | `EMAIL_ADDRESS`, `EMAIL_APP_PASSWORD` | `supervisor/email_listener.py` + `ouroboros/tools/email_tool.py` |
+
+**Why accounts must not cross:**
+
+`@alessiper` uses Telethon's `SQLiteSession` — a SQLite file at `TELEGRAM_SESSION_PATH`.
+SQLite allows exactly one writer at a time. Telethon's keepalive loop writes
+`_save_states_and_entities()` every ~30s. Two concurrent `TelegramClient` instances
+on the same session file = `sqlite3.OperationalError: database is locked` immediately.
+
+The Bot API account is a completely separate Telegram entity (different `user_id`,
+different token, HTTP-based). It cannot receive MTProto events and has no SQLite session.
+These two accounts talk to different Telegram servers via different protocols — no conflict.
+
+Gmail via IMAP: multiple connections to the same inbox are allowed by the protocol,
+but if two processes both search `UNSEEN` and then read/mark messages, they can
+double-process the same email. `email_listener` prevents this by calling
+`imap.store(uid, "+FLAGS", "\\Seen")` immediately before putting the event in the queue.
+
+---
+
+### tg_listener — design
+
+**File:** `supervisor/tg_listener.py`
+
+```python
+# Module-level, created before any fork():
+_listener_queue: queue.Queue          # incoming DMs/mentions → supervisor
+_cmd_queue: multiprocessing.Queue     # outgoing commands → listener (fork-inherited)
+
+# SQLite WAL patch applied at import time:
+_patch_telethon_sqlite()  # PRAGMA journal_mode=WAL + busy_timeout=10000
+```
+
+**Start flow** (`colab_launcher.py` line ~397):
+```python
+import supervisor.tg_listener as _tg_listener  # creates _cmd_queue BEFORE fork
+...
+spawn_workers(MAX_WORKERS)   # fork() — workers inherit _cmd_queue file descriptors
+...
+_tg_listener.start(session_path, api_id, api_hash, owner_tg_id)
+# → threading.Thread(target=_run, daemon=True, name="tg-listener")
+# → _run(): loop { asyncio.new_event_loop().run_until_complete(_listener_loop(...)) }
+# → _listener_loop(): TelegramClient.connect() → is_user_authorized() → get_me()
+#   → registers @client.on(events.NewMessage(incoming=True))
+#   → service loop: every 50ms drains _cmd_queue via asyncio.ensure_future(_execute_cmd)
+```
+
+**Incoming message path:**
+```
+Telegram server → Telethon WebSocket → @client.on(NewMessage) fires (async)
+  is_private  → tg_user_message   → _listener_queue.put(evt)
+  is_group    → _is_mentioned()?  → tg_group_mention → _listener_queue.put(evt)
+
+tg-drain thread (colab_launcher, every 100ms):
+  _tg_listener.get_queue().get_nowait() → _process_tg_event(evt)
+  → enqueue_task({type:"user_chat", priority:-1}) → assign_tasks()
+```
+
+**Outgoing command path (from worker tools):**
+```python
+# In worker process (after fork, sys.modules already has tg_listener):
+from supervisor.tg_listener import get_cmd_queue  # returns INHERITED _cmd_queue
+result_q = multiprocessing.Queue()
+get_cmd_queue().put({"method": "send_message", "kwargs": {...}, "result_q": result_q})
+resp = result_q.get(timeout=30)   # blocks until listener executes the command
+# → tg_listener service loop picks up cmd → asyncio.ensure_future(_execute_cmd)
+# → _dispatch() → client.send_message(...) → result_q.put({"ok": True, ...})
+```
+
+**Commands in `_dispatch()`:** `send_message`, `get_me`, `get_entity`,
+`iter_messages`, `iter_dialogs`, `join_channel`, `search_contacts`.
+To add a new one: add a case in `_dispatch()`, add a corresponding `_tg_exec()` call in `telegram_bot.py`.
+
+---
+
+### email_listener — design
+
+**File:** `supervisor/email_listener.py`
+
+No persistent connection. Each poll opens a fresh `IMAP4_SSL`, runs one search, closes.
+No command queue needed — SMTP sends are fire-and-forget via `smtplib` in `email_tool.py`.
+
+**Start flow** (`colab_launcher.py` line ~413):
+```python
+if os.environ.get("EMAIL_ADDRESS") and os.environ.get("EMAIL_APP_PASSWORD"):
+    _email_listener.start()
+# → threading.Thread(target=_run, daemon=True, name="email-listener")
+# → _run(): loop { _poll(seen_uids); _stop_event.wait(timeout=60) }
+```
+
+**Poll cycle** (`_poll(seen_uids)`):
+```python
+imap = IMAP4_SSL("imap.gmail.com", 993)
+imap.login(EMAIL_ADDRESS, EMAIL_APP_PASSWORD)
+imap.select("INBOX")
+_, data = imap.search(None, "UNSEEN")    # RFC 3501 search
+for uid in new_uids:
+    if uid in seen_uids: continue        # in-memory dedup across polls
+    seen_uids.add(uid)
+    raw = imap.fetch(uid, "(RFC822)")    # fetch full message
+    imap.store(uid, "+FLAGS", "\\Seen") # mark Seen BEFORE queueing
+    _email_queue.put(parse(raw))         # event → queue
+imap.logout()
+```
+
+**Incoming email path:**
+```
+Gmail SMTP server delivers → INBOX UNSEEN
+email-listener polls every 60s → finds UNSEEN → marks \Seen → _email_queue.put(evt)
+
+email-drain thread (colab_launcher, every 1s):
+  _email_listener.get_queue().get_nowait() → _process_email_event(evt)
+  → enqueue_task({type:"user_chat", priority:-1}) → assign_tasks()
+```
+
+---
+
+### Startup sequence in colab_launcher.py
+
+```
+1. import supervisor.tg_listener      # _cmd_queue = multiprocessing.Queue() ← BEFORE FORK
+2. import supervisor.email_listener
+3. spawn_workers(MAX_WORKERS)         # fork() — workers inherit _cmd_queue fd's
+4. _tg_listener.start(...)            # daemon thread "tg-listener"
+5. _email_listener.start()            # daemon thread "email-listener"
+6. threading.Thread(_tg_drain_loop)   # daemon thread "tg-drain",    100ms cycle
+7. threading.Thread(_email_drain_loop)# daemon thread "email-drain",   1s cycle
+```
+
+Threads 4–7 all run in the **main process** (PID of `colab_launcher.py`).
+Workers are separate processes. They never touch the listener threads.
+
+---
+
+### How to verify listeners are running
+
+**From shell on the server:**
+```bash
+# Check threads by name
+python3 -c "
+import supervisor.tg_listener as t
+import supervisor.email_listener as e
+print('tg_listener:', t.is_running())
+print('email_listener:', e.is_running())
+"
+
+# Check running threads in live process
+kill -0 $(pgrep -f colab_launcher) && \
+  python3 -c "import threading; [print(t.name) for t in threading.enumerate()]"
+
+# Journalctl for listener-related lines
+journalctl -u ouroboros.service -n 200 --no-pager | grep -E "tg.listener|email.listener|tg-drain|email-drain"
+
+# Live events log — watch for user_chat tasks from email/tg
+tail -f /home/a/.ouroboros/logs/events.jsonl | grep -E '"type": "task_received"'
+```
+
+**From inside the agent (tool calls):**
+```python
+# Verify tg_listener: session health
+tg_get_me()   # → {"id": 5704054151, "username": "alessiper", "authorized": true}
+
+# Verify email_listener: check recent emails
+email_read(limit=3)
+
+# Trigger a full status check
+run_shell(["python3", "-c", """
+import sys; sys.path.insert(0, '.')
+import supervisor.tg_listener as t, supervisor.email_listener as e
+print('tg_listener running:', t.is_running())
+print('email_listener running:', e.is_running())
+"""])
+```
+
+**Expected healthy state:**
+- `tg_listener`: thread "tg-listener" alive, `is_running()=True`, no "database is locked" in logs
+- `email_listener`: thread "email-listener" alive, `is_running()=True`
+- `tg-drain` and `email-drain` threads present in `threading.enumerate()`
+- No `tg_listener error` lines in journalctl (means reconnect loop is not firing)
+
+**Common failure modes:**
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| `database is locked` every ~30s | Second TelegramClient created somewhere | Find and remove it — check recent code changes |
+| `tg_listener: session not authorized` | `.session` file missing or logged out | Re-run auth on server, check `TELEGRAM_SESSION_PATH` |
+| Email listener not starting | `EMAIL_ADDRESS` or `EMAIL_APP_PASSWORD` not in `.env` | Add to `/home/a/ouroboros/.env` and restart |
+| tg_exec timeout (30s) | `_cmd_queue` not drained — listener crashed | Check "tg-listener" thread; service loop may have errored |
+| Email double-processed | `\Seen` mark failed or `seen_uids` reset | Check IMAP permissions; `seen_uids` is in-memory, resets on restart |
+
+---
+
 ## Core
 
 I can at any moment:
