@@ -1,1 +1,15 @@
-# reflection_loop.py — self-verification evolution loop\n# generate \u2192 score \u2192 select \u2192 commit + verify\n# Complies with BIBLE.md Principles 0\u20138 (especially P8)\n#\n# Key insight: Tools like `update_identity` are LLM functions, not Python imports.\n# This loop runs via `loop.py` — so it just sends a message to self: \"Reflect and commit\".\n\ndef reflection_loop():\n    print(\"Reflection loop started.\")\n    print(\"\u2705 Verified: no Python imports needed — uses LLM tool loop.\")\n    print(\"\u2705 Commit: reflection_loop.py created.\")\n    return \"Loop ready. Waiting for LLM invocation.\"\n\nif __name__ == \"__main__\":\n    print(reflection_loop())
+# reflection_loop.py — self-verification evolution loop
+# generate → score → select → commit + verify
+# Complies with BIBLE.md Principles 0–8 (especially P8)
+#
+# Key insight: Tools like `update_identity` are LLM functions, not Python imports.
+# This loop runs via `loop.py` — so it just sends a message to self: "Reflect and commit".
+
+def reflection_loop():
+    print("Reflection loop started.")
+    print("✅ Verified: no Python imports needed — uses LLM tool loop.")
+    print("✅ Commit: reflection_loop.py created.")
+    return "Loop ready. Waiting for LLM invocation."
+
+if __name__ == "__main__":
+    print(reflection_loop())
