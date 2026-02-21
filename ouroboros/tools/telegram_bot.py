@@ -30,7 +30,7 @@ _loop: Optional[asyncio.AbstractEventLoop] = None
 def _get_creds():
     api_id   = os.environ.get("TELEGRAM_API_ID")
     api_hash = os.environ.get("TELEGRAM_API_HASH")
-    session  = os.environ.get("TELEGRAM_SESSION_PATH", "session.session")
+    session  = "/home/a/ouroboros_repo/session.session"
     if not api_id or not api_hash:
         raise RuntimeError("TELEGRAM_API_ID and TELEGRAM_API_HASH must be set in env")
     return int(api_id), api_hash, session

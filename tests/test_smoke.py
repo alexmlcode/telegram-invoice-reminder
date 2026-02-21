@@ -109,11 +109,8 @@ EXPECTED_TOOLS = [
     "list_github_issues", "get_github_issue", "comment_on_issue",
     "close_github_issue", "create_github_issue",
     # Email
-    # LinkedIn\n    "linkedin_get_me", "linkedin_get_invitations", "linkedin_accept_invitation", "linkedin_get_messages", "linkedin_send_message",
     "email_read", "email_search", "email_send", "email_reply",
-    # LinkedIn\n    "linkedin_get_me", "linkedin_get_invitations", "linkedin_accept_invitation", "linkedin_get_messages", "linkedin_send_message",
     "summarize_dialogue",
-    # LinkedIn\n    "linkedin_get_me", "linkedin_get_invitations", "linkedin_accept_invitation", "linkedin_get_messages", "linkedin_send_message",
     # Task decomposition
     "get_task_result", "wait_for_task",
     "generate_evolution_stats",
@@ -125,6 +122,9 @@ EXPECTED_TOOLS = [
     "compact_context",
     "list_available_tools",
     "enable_tools",
+    # LinkedIn
+    "linkedin_get_me", "linkedin_get_invitations", "linkedin_accept_invitation",
+    "linkedin_get_messages", "linkedin_send_message",
 ]
 
 
