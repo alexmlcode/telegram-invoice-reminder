@@ -145,7 +145,7 @@ def _tg_read(ctx: ToolContext, entity: str, limit: int = 20,
     async def _inner():
         c = await _get_client()
         msgs = []
-        kwargs: Dict[str, Any] = {"limit": min(int(limit), 100)}
+        kwargs: Dict[str, Any] = {"limit": min(int(limit), 500)}
         if min_id:
             kwargs["min_id"] = int(min_id)
         async for msg in c.iter_messages(entity, **kwargs):
