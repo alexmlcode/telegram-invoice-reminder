@@ -100,6 +100,11 @@ CORE_TOOL_NAMES = {
     "request_restart", "promote_to_stable",
     "knowledge_read", "knowledge_write",
     "browse_page", "browser_action", "analyze_screenshot",
+    "linkedin_get_me",
+    "linkedin_get_invitations",
+    "linkedin_accept_invitation",
+    "linkedin_get_messages",
+    "linkedin_send_message",
 }
 
 

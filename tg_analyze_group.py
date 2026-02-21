@@ -59,7 +59,7 @@ async def main():
     print('Connecting to Telegram...')
     client = TelegramClient(SESSION_PATH, API_ID, API_HASH)
     await client.start()
-    print(f'✅ Connected as {await client.get_me().username}')
+    print(f'✅ Connected as {(await client.get_me()).username}')
     
     # Get the group entity
     print(f'\nFetching group: {GROUP_USERNAME}')
@@ -75,7 +75,7 @@ async def main():
     print(f'\nReading messages from {GROUP_USERNAME}...')
     messages = []
     async for msg in client.iter_messages(entity, limit=500):
-        if msg.sender_id and not msg.from_bot:
+        if msg.sender_id:
             messages.append({
                 'id': msg.id,
                 'text': msg.text or '',

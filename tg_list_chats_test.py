@@ -8,7 +8,7 @@ async def main():
     await client.start()
     print("Chats I'm in:")
     async for dialog in client.iter_dialogs():
-        print(f"  {dialog.entity.title}: @{dialog.entity.username or ''}")
+        print(f"  {dialog.entity.title or dialog.entity.first_name or ''}: @{dialog.entity.username or ''}")
     await client.disconnect()
 
 asyncio.run(main())
