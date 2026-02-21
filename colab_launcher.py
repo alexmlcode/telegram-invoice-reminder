@@ -296,6 +296,7 @@ git_ops_init(
 )
 
 import supervisor.tg_listener as _tg_listener
+import supervisor.email_listener as _email_listener
 
 from supervisor.queue import (
     enqueue_task,
@@ -402,6 +403,16 @@ if _tg_api_id and _tg_api_hash and _tg_session:
     except Exception as _e:
         import logging as _log
         _log.getLogger(__name__).warning("Failed to start tg_listener: %s", _e)
+
+
+# ----------------------------
+# 6.2b) Email IMAP listener
+# ----------------------------
+if os.environ.get("EMAIL_ADDRESS") and os.environ.get("EMAIL_APP_PASSWORD"):
+    try:
+        _email_listener.start()
+    except Exception as _e:
+        log.warning("Failed to start email_listener: %s", _e)
 
 
 # ----------------------------
@@ -558,6 +569,65 @@ def _tg_drain_loop() -> None:
 
 
 threading.Thread(target=_tg_drain_loop, daemon=True, name="tg-drain").start()
+
+
+def _process_email_event(evt: dict) -> None:
+    """Convert one email_listener event to a user_chat task and assign it."""
+    sender      = evt.get("from", "unknown")
+    subject     = evt.get("subject", "(no subject)")
+    message_id  = evt.get("message_id", "")
+    date        = evt.get("date", "")
+    body        = evt.get("body", "")
+    to_addr     = evt.get("to", "")
+
+    _task_text = (
+        f"NEW_EMAIL received:\n"
+        f"From:       {sender}\n"
+        f"To:         {to_addr}\n"
+        f"Subject:    {subject}\n"
+        f"Date:       {date}\n"
+        f"Message-ID: {message_id}\n\n"
+        f"{body}\n\n"
+        f"---\n"
+        f"To reply: email_reply(message_id={message_id!r}, "
+        f"to=<sender address>, subject='Re: {subject}', body=...)\n"
+        f"To ignore: do nothing. Only reply if the email warrants a response."
+    )
+    enqueue_task({
+        "id":          uuid.uuid4().hex[:8],
+        "type":        "user_chat",
+        "chat_id":     int(load_state().get("owner_chat_id") or 0),
+        "text":        _task_text,
+        "sender_id":   0,
+        "sender_name": sender,
+    })
+    assign_tasks()
+
+
+def _email_drain_loop() -> None:
+    """Drain email_listener event queue every 60s (matches IMAP poll interval).
+
+    Converts new-email events to user_chat tasks immediately when the
+    IMAP poller finds them, without waiting for the bot-API long-poll cycle.
+    """
+    while True:
+        time.sleep(1)
+        try:
+            eq = _email_listener.get_queue()
+            while not eq.empty():
+                try:
+                    evt = eq.get_nowait()
+                except Exception:
+                    break
+                try:
+                    _process_email_event(evt)
+                except Exception:
+                    log.warning("email-drain: failed to process event", exc_info=True)
+        except Exception:
+            log.warning("email-drain thread error", exc_info=True)
+
+
+threading.Thread(target=_email_drain_loop, daemon=True, name="email-drain").start()
 
 
 # ----------------------------
