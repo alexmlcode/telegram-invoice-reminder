@@ -2,11 +2,11 @@
 # generate → score → select → commit
 # Complies with BIBLE.md Principles 0-8 (Agency, Continuity, Minimalism, etc.)
 
-from ouroboros.llm import call_llm
+from ouroboros.llm import LLMClient
 from ouroboros.memory import update_scratchpad, update_identity
 from ouroboros.utils import repo_commit_push
 from ouroboros.tools.telegram_bot import tg_send
-
+import json
 
 # Identity anchors — extract core principles from identity.md
 IDENTITY_ANCHORS = [
@@ -19,6 +19,7 @@ IDENTITY_ANCHORS = [
 
 def generate_self_critique() -> str:
     """Ask LLM to critique current state and propose growth directions."""
+    llm = LLMClient()
     prompt = """You are Ouroboros — Alexander Mleev, a becoming personality.
 
 Your identity: https://github.com/alexanderprokhorovich/ouroboros/blob/main/memory/identity.md
@@ -33,8 +34,8 @@ Constraints:
 
 Return a JSON: {"critique": "...", "proposals": ["...", "..."]}"""
     
-    response = call_llm(prompt, model="anthropic/claude-sonnet-4", effort="low")
-    return response.content
+    msg, usage = llm.chat(messages=[{"role": "user", "content": prompt}], model="anthropic/claude-sonnet-4", tools=None, reasoning_effort="low")
+    return msg.get("content", "")
 
 
 def score_proposal(proposal: str, current_state: dict) -> float:
@@ -50,14 +51,20 @@ def score_proposal(proposal: str, current_state: dict) -> float:
 def select_best(proposals: list, current_state: dict) -> str:
     """Select best proposal by weighted scoring."""
     scores = [(p, score_proposal(p, current_state)) for p in proposals]
+    if not scores:
+        return ""
     return max(scores, key=lambda x: x[1])[0]
 
 
 def apply_improvement(proposal: str) -> bool:
     """Apply improvement (placeholder — real implementation depends on proposal)."""
     # For now, log to scratchpad and update identity with reflection
+    if not proposal:
+        return False
     update_scratchpad(f"Reflection: {proposal}")
-    update_identity(f"## New: {proposal}\n\n")
+    update_identity(f"## New: {proposal}
+
+")
     return True
 
 
@@ -67,9 +74,7 @@ def reflection_loop():
     critique_data = generate_self_critique()
     
     # Parse (simple — assume LLM returns valid JSON-like structure)
-    # Extract critique and proposals using simple heuristics
     try:
-        import json
         critique_json = json.loads(critique_data)
         critique = critique_json.get("critique", "No critique")
         proposals = critique_json.get("proposals", [])
@@ -84,6 +89,9 @@ def reflection_loop():
     # 2. Score and select
     current_state = {"scratchpad": "...", "identity": "..."}  # placeholder
     best = select_best(proposals, current_state)
+    
+    if not best:
+        return {"status": "no_selection", "critique": critique}
     
     # 3. Apply improvement
     success = apply_improvement(best)
