@@ -69,6 +69,14 @@ _listener_queue: queue.Queue = queue.Queue()
 # Outgoing commands → listener async loop (multiprocessing-safe, fork-inherited)
 _cmd_queue: multiprocessing.Queue = multiprocessing.Queue()
 
+# Thread-safe command queue for same-process callers (consciousness, main loop).
+# Avoids pickling Queue objects into multiprocessing.Queue.
+_local_cmd_queue: queue.Queue = queue.Queue()
+
+# Pre-fork result queue: listener → worker processes (by correlation ID).
+# Workers put corr_id in cmd, listener puts result here. Workers filter by corr_id.
+_worker_result_queue: multiprocessing.Queue = multiprocessing.Queue()
+
 _listener_thread: Optional[threading.Thread] = None
 _stop_event = threading.Event()
 
@@ -83,6 +91,16 @@ def get_queue() -> queue.Queue:
 def get_cmd_queue() -> multiprocessing.Queue:
     """Return the command queue. Imported by telegram_bot tools at module level."""
     return _cmd_queue
+
+
+def get_local_cmd_queue() -> queue.Queue:
+    """Thread-safe command queue for calls from the main process (no pickling)."""
+    return _local_cmd_queue
+
+
+def get_worker_result_queue() -> multiprocessing.Queue:
+    """Pre-fork result queue for worker → main communication (by corr_id)."""
+    return _worker_result_queue
 
 
 def start(session_path: str, api_id: int, api_hash: str,
@@ -144,15 +162,25 @@ def _fmt_entity(e) -> Dict[str, Any]:
 # ── Command dispatcher ─────────────────────────────────────────────────────────
 
 async def _execute_cmd(client, cmd: dict) -> None:
-    """Execute one Telegram command and put the result on cmd["result_q"]."""
-    result_q: Optional[multiprocessing.Queue] = cmd.get("result_q")
-    if result_q is None:
+    """Execute one Telegram command and deliver result to caller.
+
+    Two delivery paths:
+    - result_q (queue.Queue): for main-process callers (consciousness). Direct put().
+    - corr_id (str): for worker-process callers. Result put to _worker_result_queue.
+    """
+    result_q = cmd.get("result_q")  # stdlib queue.Queue, or None
+    corr_id: Optional[str] = cmd.get("corr_id")  # for worker callers
+    if result_q is None and not corr_id:
         return
     try:
         result = await _dispatch(client, cmd.get("method", ""), cmd.get("kwargs", {}))
-        result_q.put({"ok": True, "result": result})
+        payload: dict = {"ok": True, "result": result}
     except Exception as exc:
-        result_q.put({"ok": False, "error": str(exc)})
+        payload = {"ok": False, "error": str(exc)}
+    if result_q is not None:
+        result_q.put(payload)
+    elif corr_id:
+        _worker_result_queue.put({"corr_id": corr_id, **payload})
 
 
 async def _dispatch(client, method: str, kw: dict) -> Any:
@@ -375,12 +403,15 @@ async def _listener_loop(session_path: str, api_id: int, api_hash: str,
                 break  # outer while will reconnect
 
             # Drain pending commands (non-blocking)
-            while True:
-                try:
-                    cmd = _cmd_queue.get_nowait()
-                    asyncio.ensure_future(_execute_cmd(client, cmd))
-                except Exception:
-                    break
+            # _cmd_queue: from worker processes (forked, inherited FDs)
+            # _local_cmd_queue: from main process (consciousness, thread-safe)
+            for _cq in (_cmd_queue, _local_cmd_queue):
+                while True:
+                    try:
+                        cmd = _cq.get_nowait()
+                        asyncio.ensure_future(_execute_cmd(client, cmd))
+                    except Exception:
+                        break
 
             # Yield to event loop — Telethon processes received updates here
             await asyncio.sleep(0.05)

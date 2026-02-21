@@ -14,12 +14,19 @@ from __future__ import annotations
 
 import json
 import logging
-import multiprocessing
+import os
+import queue as _stdlib_queue
+import time
+import uuid
 from typing import Any, Dict, List, Optional
 
 from ouroboros.tools.registry import ToolContext, ToolEntry
 
 log = logging.getLogger(__name__)
+
+# PID of the process that imported this module.
+# consciousness and supervisor run in the main process; workers are forked children.
+_MAIN_PID: int = os.getpid()
 
 
 # ---------------------------------------------------------------------------
@@ -29,22 +36,67 @@ log = logging.getLogger(__name__)
 def _tg_exec(method: str, timeout: float = 30, **kwargs) -> Any:
     """Send a command to the Telethon service and wait for result.
 
-    The command is put on _cmd_queue (inherited from parent process via fork).
-    tg_listener's async loop picks it up, executes it, and puts the result
-    on result_q.
+    Two code paths depending on caller:
+
+    Main process (consciousness, supervisor):
+      Uses _local_cmd_queue (stdlib queue.Queue). No pickling needed — the
+      listener daemon thread and consciousness thread share the same process.
+      Result delivered via result_q (also stdlib queue.Queue, no pickling).
+
+    Worker process (forked child):
+      Uses _cmd_queue (multiprocessing.Queue with inherited FDs). Can only
+      send picklable data, so passes a corr_id (str) instead of result_q.
+      Listener delivers result to _worker_result_queue (pre-fork, shared).
+      Worker polls _worker_result_queue filtering by corr_id.
 
     Raises RuntimeError if the service doesn't respond or returns an error.
     """
-    from supervisor.tg_listener import get_cmd_queue
-    result_q: multiprocessing.Queue = multiprocessing.Queue()
-    get_cmd_queue().put({"method": method, "kwargs": kwargs, "result_q": result_q})
-    try:
-        resp = result_q.get(timeout=timeout)
-    except Exception:
-        raise RuntimeError(
-            "Telegram service did not respond in time "
-            "(is tg_listener running? check TELEGRAM_API_ID/HASH)"
-        )
+    from supervisor.tg_listener import (
+        get_cmd_queue, get_local_cmd_queue, get_worker_result_queue,
+    )
+
+    if os.getpid() == _MAIN_PID:
+        # ── Main process path ──────────────────────────────────────────────
+        # thread-safe queue; no pickling; listener reads it every 50ms
+        result_q: _stdlib_queue.Queue = _stdlib_queue.Queue()
+        get_local_cmd_queue().put({"method": method, "kwargs": kwargs, "result_q": result_q})
+        try:
+            resp = result_q.get(timeout=timeout)
+        except _stdlib_queue.Empty:
+            raise RuntimeError(
+                "Telegram service did not respond in time "
+                "(is tg_listener running?)"
+            )
+    else:
+        # ── Worker process path ────────────────────────────────────────────
+        # Use corr_id instead of result_q — only picklable data in cmd dict
+        corr_id = uuid.uuid4().hex
+        get_cmd_queue().put({"method": method, "kwargs": kwargs, "corr_id": corr_id})
+        wrq = get_worker_result_queue()
+        deadline = time.monotonic() + timeout
+        pending: list = []
+        resp = None
+        while time.monotonic() < deadline:
+            remaining = deadline - time.monotonic()
+            try:
+                item = wrq.get(timeout=min(remaining, 0.5))
+                if item.get("corr_id") == corr_id:
+                    resp = item
+                    break
+                pending.append(item)  # belongs to another worker
+            except _stdlib_queue.Empty:
+                break
+        for p in pending:
+            try:
+                wrq.put_nowait(p)
+            except Exception:
+                pass
+        if resp is None:
+            raise RuntimeError(
+                "Telegram service did not respond in time "
+                "(is tg_listener running?)"
+            )
+
     if not resp.get("ok"):
         raise RuntimeError(resp.get("error", "unknown error from Telegram service"))
     return resp["result"]
