@@ -350,6 +350,10 @@ assert ok, f"Bootstrap failed: {msg}"
 # ----------------------------
 # 6) Start workers
 # ----------------------------
+# Pre-import llm module so the cross-process semaphore (_llm_gate) is created
+# BEFORE fork — all workers inherit the same POSIX semaphore.
+import ouroboros.llm  # noqa: F401, E402
+
 kill_workers()
 spawn_workers(MAX_WORKERS)
 restored_pending = restore_pending_from_snapshot()
@@ -512,6 +516,7 @@ _drains.init(
     tg_listener=_tg_listener,
     email_listener=_email_listener,
     linkedin_listener=_linkedin_listener,
+    inject_observation=_consciousness.inject_observation,
 )
 _drains.start_all()
 

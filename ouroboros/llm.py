@@ -8,6 +8,7 @@ Contract: chat(), default_model(), available_models(), add_usage().
 from __future__ import annotations
 
 import logging
+import multiprocessing as _mp
 import os
 import time
 from typing import Any, Dict, List, Optional, Tuple
@@ -142,6 +143,16 @@ def fetch_openrouter_pricing() -> Dict[str, Tuple[float, float, float]]:
         return {}
 
 
+# ---------------------------------------------------------------------------
+# Cross-process gate: limits concurrent LLM API calls to match backend
+# capacity (e.g. llama.cpp --parallel 2).  Created at module level so that
+# fork() inherits the same POSIX semaphore in every worker process.
+# Override with OUROBOROS_LLM_SLOTS env var.
+# ---------------------------------------------------------------------------
+_LLM_SLOTS = int(os.environ.get("OUROBOROS_LLM_SLOTS") or 2)
+_llm_gate: _mp.Semaphore = _mp.Semaphore(_LLM_SLOTS)
+
+
 class LLMClient:
     """OpenRouter API wrapper. All LLM calls go through this class.
 
@@ -267,7 +278,11 @@ class LLMClient:
             kwargs["tools"] = tools_with_cache
             kwargs["tool_choice"] = tool_choice
 
-        resp = client.chat.completions.create(**kwargs)
+        _llm_gate.acquire()
+        try:
+            resp = client.chat.completions.create(**kwargs)
+        finally:
+            _llm_gate.release()
         resp_dict = resp.model_dump()
         usage = resp_dict.get("usage") or {}
         choices = resp_dict.get("choices") or [{}]
