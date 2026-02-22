@@ -107,10 +107,10 @@ def check_tool_count(venv_python: str, working_dir: str, min_count: int) -> tupl
     """Verify tool registry has enough tools."""
     try:
         script = (
-            "import sys; sys.path.insert(0, '.');"
-            "from ouroboros.tools.registry import discover_tools;"
-            "tools = discover_tools();"
-            "print(len(tools))"
+            "import sys, pathlib; sys.path.insert(0, '.');"
+            "from ouroboros.tools.registry import ToolRegistry;"
+            "r = ToolRegistry(repo_dir=pathlib.Path('.'), drive_root=pathlib.Path('/tmp'));"
+            "print(len(r.available_tools()))"
         )
         result = subprocess.run(
             [venv_python, "-c", script],
