@@ -14,7 +14,7 @@
             from supervisor.events import dispatch_event
             while True:
                 try:
-                    evt = _tg_listener.get_listener_queue().get_nowait()
+                    evt = _tg_listener.get_queue().get_nowait()
                     dispatch_event(evt, ctx=None)
                 except Exception:
                     pass
