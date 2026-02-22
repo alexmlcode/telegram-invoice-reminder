@@ -48,14 +48,16 @@ def load_env(working_dir: str) -> dict:
 
 def get_current_sha(repo_dir: str) -> str:
     try:
+        env = {**os.environ, "GIT_DIR": os.path.join(repo_dir, ".git")}
         result = subprocess.run(
             ["git", "rev-parse", "HEAD"],
             cwd=repo_dir,
             capture_output=True,
             text=True,
             timeout=10,
+            env=env,
         )
-        return result.stdout.strip()
+        return result.stdout.strip() or "unknown"
     except Exception:
         return "unknown"
 
