@@ -653,5 +653,7 @@ class OuroborosAgent:
 # ---------------------------------------------------------------------------
 
 def make_agent(repo_dir: str, drive_root: str, event_queue: Any = None) -> OuroborosAgent:
-    env = Env(repo_dir=pathlib.Path(repo_dir), drive_root=pathlib.Path(drive_root))
+    branch_dev = os.environ.get("OUROBOROS_BRANCH_DEV", "ouroboros")
+    env = Env(repo_dir=pathlib.Path(repo_dir), drive_root=pathlib.Path(drive_root),
+              branch_dev=branch_dev)
     return OuroborosAgent(env, event_queue=event_queue)
