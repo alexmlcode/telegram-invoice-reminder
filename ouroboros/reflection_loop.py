@@ -1,5 +1,5 @@
-Self-Modifying Reflection Loop with GEPA + SVR + Identity.
-Complete version with all methods.
+# Self-Modifying Reflection Loop with GEPA + SVR + Identity.
+# Complete version with all methods.
 
 from __future__ import annotations
 
