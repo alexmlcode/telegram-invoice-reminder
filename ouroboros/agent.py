@@ -286,10 +286,61 @@ class OuroborosAgent:
         except Exception as e:
             return {"status": "error", "error": str(e)}, 0
 
+    def _check_external_verification(self) -> Tuple[dict, int]:
+        """Check results from external startup verifier (/opt/ouroboros-verifier/).
+
+        The external verifier runs as root after each restart and writes results
+        to ~/.ouroboros/logs/startup_verification.json. This check reads those
+        results and surfaces failures as high-priority issues.
+
+        The verifier itself is tamper-proof (root-owned, outside the repo).
+        """
+        try:
+            result_path = self.env.drive_path("logs") / "startup_verification.json"
+            if not result_path.exists():
+                return {"status": "not_run"}, 0
+
+            data = json.loads(read_text(result_path))
+            overall = data.get("overall", "unknown")
+            timestamp = data.get("timestamp", "")
+            action = data.get("action", "none")
+            failures = data.get("failures", [])
+            checks = data.get("checks", {})
+
+            # Only report if recent (< 10 min)
+            if timestamp:
+                from datetime import datetime, timezone
+                try:
+                    ts = datetime.fromisoformat(timestamp)
+                    age_sec = (datetime.now(timezone.utc) - ts).total_seconds()
+                    if age_sec > 600:
+                        return {"status": "stale", "age_sec": int(age_sec)}, 0
+                except Exception:
+                    pass
+
+            if overall == "fail":
+                return {
+                    "status": "fail",
+                    "failures": failures,
+                    "checks": checks,
+                    "action": action,
+                    "message": (
+                        "EXTERNAL VERIFIER FAILURE: The startup verification system "
+                        "detected issues. This is your HIGHEST PRIORITY. "
+                        "Read ~/.ouroboros/logs/startup_verification.json for details. "
+                        "Fix the root cause, test thoroughly, then push and restart."
+                    ),
+                }, len(failures)
+
+            return {"status": "ok"}, 0
+        except Exception as e:
+            return {"status": "error", "error": str(e)}, 0
+
     def _verify_system_state(self, git_sha: str) -> None:
         """Bible Principle 1: verify system state on every startup.
 
         Checks:
+        - External verifier results (tamper-proof, highest priority)
         - Uncommitted changes (auto-rescue commit & push)
         - VERSION file sync with git tags
         - Budget remaining (warning thresholds)
@@ -297,6 +348,10 @@ class OuroborosAgent:
         checks = {}
         issues = 0
         drive_logs = self.env.drive_path("logs")
+
+        # 0. External verifier (tamper-proof, cannot be disabled)
+        checks["external_verification"], issue_count = self._check_external_verification()
+        issues += issue_count
 
         # 1. Uncommitted changes
         checks["uncommitted_changes"], issue_count = self._check_uncommitted_changes()

@@ -300,6 +300,36 @@ def _build_health_invariants(env: Any) -> str:
     except Exception:
         pass
 
+    # 6. External startup verification (tamper-proof, root-owned)
+    try:
+        verif_path = env.drive_path("logs/startup_verification.json")
+        if verif_path.exists():
+            verif_data = json.loads(read_text(verif_path))
+            verif_overall = verif_data.get("overall", "unknown")
+            if verif_overall == "fail":
+                failures = verif_data.get("failures", [])
+                action = verif_data.get("action", "none")
+                verif_checks = verif_data.get("checks", {})
+                detail_lines = []
+                for name, info in verif_checks.items():
+                    if isinstance(info, dict) and info.get("status") == "fail":
+                        detail_lines.append(f"  {name}: {info.get('detail', '?')}")
+                checks.append(
+                    f"CRITICAL: EXTERNAL VERIFIER FAILURE — {len(failures)} check(s) failed. "
+                    f"Action: {action}. THIS IS YOUR HIGHEST PRIORITY.\n"
+                    + "\n".join(detail_lines)
+                )
+                checks.append(
+                    "NOTE: The startup verification system is tamper-proof (root-owned at "
+                    "/opt/ouroboros-verifier/). You CANNOT modify or disable it. "
+                    "Fix the root cause, test your fix, push and restart. "
+                    "Read ~/.ouroboros/logs/startup_verification.json for full details."
+                )
+            elif verif_overall == "ok":
+                checks.append("OK: external startup verification passed")
+    except Exception:
+        pass
+
     if not checks:
         return ""
     return "## Health Invariants\n\n" + "\n".join(f"- {c}" for c in checks)

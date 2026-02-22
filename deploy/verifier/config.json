@@ -1,0 +1,10 @@
+{
+  "bible_sha256": "ac32511c99a96a4c7af7062c6e867551c7ff9a2f440a93e28bd85c041d546b7c",
+  "min_tool_count": 33,
+  "max_retries": 3,
+  "verify_delay_sec": 45,
+  "repo_dir": "/home/a/ouroboros_repo",
+  "working_dir": "/home/a/ouroboros",
+  "drive_root": "/home/a/.ouroboros",
+  "venv_python": "/home/a/ouroboros/.venv/bin/python"
+}
