@@ -138,59 +138,84 @@ class OuroborosAgent:
             pass
 
     def _check_uncommitted_changes(self) -> Tuple[dict, int]:
-        """Check for uncommitted changes and attempt auto-rescue commit & push."""
+        """Check for uncommitted changes and attempt auto-rescue commit & push.
+
+        Uses a file lock to prevent race conditions when multiple workers
+        run this check simultaneously after fork.
+        """
+        import fcntl
         import re
         import subprocess
+
+        lock_path = self.env.drive_path("locks") / "git_auto_rescue.lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+
         try:
-            result = subprocess.run(
-                ["git", "status", "--porcelain"],
-                cwd=str(self.env.repo_dir),
-                capture_output=True, text=True, timeout=10, check=True
-            )
-            dirty_files = [l.strip() for l in result.stdout.strip().split('\n') if l.strip()]
-            if dirty_files:
-                # Auto-rescue: commit and push
-                auto_committed = False
-                try:
-                    # Only stage tracked files (not secrets/notebooks)
-                    subprocess.run(["git", "add", "-u"], cwd=str(self.env.repo_dir), timeout=10, check=True)
-                    subprocess.run(
-                        ["git", "commit", "-m", "auto-rescue: uncommitted changes detected on startup"],
-                        cwd=str(self.env.repo_dir), timeout=30, check=True
-                    )
-                    # Validate branch name
-                    if not re.match(r'^[a-zA-Z0-9_/-]+$', self.env.branch_dev):
-                        raise ValueError(f"Invalid branch name: {self.env.branch_dev}")
-                    # Pull with rebase before push
-                    subprocess.run(
-                        ["git", "pull", "--rebase", "origin", self.env.branch_dev],
-                        cwd=str(self.env.repo_dir), timeout=60, check=True
-                    )
-                    # Push
-                    try:
-                        subprocess.run(
-                            ["git", "push", "origin", self.env.branch_dev],
-                            cwd=str(self.env.repo_dir), timeout=60, check=True
-                        )
-                        auto_committed = True
-                        log.warning(f"Auto-rescued {len(dirty_files)} uncommitted files on startup")
-                    except subprocess.CalledProcessError:
-                        # If push fails, undo the commit
-                        subprocess.run(
-                            ["git", "reset", "HEAD~1"],
-                            cwd=str(self.env.repo_dir), timeout=10, check=True
-                        )
-                        raise
-                except Exception as e:
-                    log.warning(f"Failed to auto-rescue uncommitted changes: {e}", exc_info=True)
-                return {
-                    "status": "warning", "files": dirty_files[:20],
-                    "auto_committed": auto_committed,
-                }, 1
-            else:
-                return {"status": "ok"}, 0
+            lock_fd = open(lock_path, "w")
+            try:
+                fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except (OSError, BlockingIOError):
+                # Another worker is already running auto-rescue
+                lock_fd.close()
+                return {"status": "ok", "message": "skipped (another worker holds lock)"}, 0
+
+            try:
+                return self._do_check_uncommitted(re, subprocess)
+            finally:
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                lock_fd.close()
         except Exception as e:
             return {"status": "error", "error": str(e)}, 0
+
+    def _do_check_uncommitted(self, re, subprocess) -> Tuple[dict, int]:
+        """Actual uncommitted changes check (called under file lock)."""
+        result = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=str(self.env.repo_dir),
+            capture_output=True, text=True, timeout=10, check=True
+        )
+        dirty_files = [l.strip() for l in result.stdout.strip().split('\n') if l.strip()]
+        if not dirty_files:
+            return {"status": "ok"}, 0
+
+        # Auto-rescue: commit and push
+        auto_committed = False
+        try:
+            # Only stage tracked files (not secrets/notebooks)
+            subprocess.run(["git", "add", "-u"], cwd=str(self.env.repo_dir), timeout=10, check=True)
+            subprocess.run(
+                ["git", "commit", "-m", "auto-rescue: uncommitted changes detected on startup"],
+                cwd=str(self.env.repo_dir), timeout=30, check=True
+            )
+            # Validate branch name
+            if not re.match(r'^[a-zA-Z0-9_/-]+$', self.env.branch_dev):
+                raise ValueError(f"Invalid branch name: {self.env.branch_dev}")
+            # Pull with rebase before push
+            subprocess.run(
+                ["git", "pull", "--rebase", "origin", self.env.branch_dev],
+                cwd=str(self.env.repo_dir), timeout=60, check=True
+            )
+            # Push
+            try:
+                subprocess.run(
+                    ["git", "push", "origin", self.env.branch_dev],
+                    cwd=str(self.env.repo_dir), timeout=60, check=True
+                )
+                auto_committed = True
+                log.warning(f"Auto-rescued {len(dirty_files)} uncommitted files on startup")
+            except subprocess.CalledProcessError:
+                # If push fails, undo the commit
+                subprocess.run(
+                    ["git", "reset", "HEAD~1"],
+                    cwd=str(self.env.repo_dir), timeout=10, check=True
+                )
+                raise
+        except Exception as e:
+            log.warning(f"Failed to auto-rescue uncommitted changes: {e}", exc_info=True)
+        return {
+            "status": "warning", "files": dirty_files[:20],
+            "auto_committed": auto_committed,
+        }, 1
 
     def _check_version_sync(self) -> Tuple[dict, int]:
         """Check VERSION file sync with git tags and pyproject.toml."""
