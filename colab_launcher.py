@@ -431,7 +431,34 @@ if os.environ.get("LINKEDIN_LI_AT") and os.environ.get("LINKEDIN_JSESSIONID"):
         log.warning("Failed to start linkedin_listener: %s", _e)
 
 
+
+
 # ----------------------------
+# 6.2.1) Telegram listener drain loop
+# ----------------------------
+def _tg_drain_loop():
+    import time
+    import logging as _log
+    import queue
+    import supervisor.tg_listener as _tg_listener
+    _log.info("tg_drain_loop: starting")
+    while True:
+        try:
+            evt = _tg_listener.get_queue().get(timeout=1.0)
+            if not isinstance(evt, dict):
+                _log.warning("tg_drain_loop: invalid event type: %s", type(evt)); continue
+            if evt.get('type') == 'tg_group_mention':
+                from supervisor.queue import enqueue_task; enqueue_task({"type": "tg_group_mention", "priority": -1, "data": evt});
+            elif evt.get('type') == 'tg_user_message':
+                from supervisor.queue import enqueue_task; enqueue_task({"type": "user_chat", "priority": -1, "data": evt});
+            else:
+                _log.warning("tg_drain_loop: unknown event type: %s", evt.get('type'));
+        except queue.Empty:
+            pass
+        except Exception as _e:
+            _log.error("tg_drain_loop: error", exc_info=True); time.sleep(1.0)
+
+_tg_drain_thread = threading.Thread(target=_tg_drain_loop, daemon=True); _tg_drain_thread.start()
 # 6.3) Direct-mode watchdog
 # ----------------------------
 def _chat_watchdog_loop():
