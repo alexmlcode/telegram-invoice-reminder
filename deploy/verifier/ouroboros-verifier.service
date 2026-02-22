@@ -1,0 +1,13 @@
+[Unit]
+Description=Ouroboros Startup Verifier
+After=ouroboros.service
+Requires=ouroboros.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/ouroboros-verifier/verify.py --delay
+User=root
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+
+[Install]
+WantedBy=multi-user.target

@@ -39,7 +39,7 @@ log = logging.getLogger(__name__)
 class BackgroundConsciousness:
     """Persistent background thinking loop for Ouroboros."""
 
-    _MAX_BG_ROUNDS = 5
+    _MAX_BG_ROUNDS = 8
 
     def __init__(
         self,
@@ -60,7 +60,8 @@ class BackgroundConsciousness:
         self._thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
         self._wakeup_event = threading.Event()
-        self._next_wakeup_sec: float = 300.0
+        self._next_wakeup_sec: float = 60.0
+        self._wakeup_counter: int = 0
         self._observations: queue.Queue = queue.Queue()
         self._deferred_events: list = []
 
@@ -153,7 +154,7 @@ class BackgroundConsciousness:
                     "traceback": traceback.format_exc()[:1500],
                 })
                 self._next_wakeup_sec = min(
-                    self._next_wakeup_sec * 2, 1800
+                    self._next_wakeup_sec * 2, 300
                 )
 
     def _check_budget(self) -> bool:
@@ -174,6 +175,7 @@ class BackgroundConsciousness:
 
     def _think(self) -> None:
         """One thinking cycle: build context, call LLM, execute tools iteratively."""
+        self._wakeup_counter += 1
         context = self._build_context()
         model = self._model
 
@@ -197,7 +199,7 @@ class BackgroundConsciousness:
                     model=model,
                     tools=tools,
                     reasoning_effort="low",
-                    max_tokens=2048,
+                    max_tokens=32768,
                 )
                 cost = float(usage.get("cost") or 0)
                 total_cost += cost
@@ -338,6 +340,7 @@ class BackgroundConsciousness:
 
         # Runtime info + state
         runtime_lines = [f"UTC: {utc_now_iso()}"]
+        runtime_lines.append(f"wakeup_count: {self._wakeup_counter}  (use wakeup_count % 3 to pick thinking mode)")
         runtime_lines.append(f"BG budget spent: ${self._bg_spent_usd:.4f}")
         runtime_lines.append(f"Current wakeup interval: {self._next_wakeup_sec}s")
 
@@ -372,20 +375,23 @@ class BackgroundConsciousness:
         # Knowledge base
         "knowledge_read", "knowledge_write", "knowledge_list",
         # Read-only tools for awareness
-        "web_search", "repo_read", "repo_list", "drive_read", "drive_list",
-        "chat_history",
+        "web_search", "browse_page", "repo_read", "repo_list", "drive_read", "drive_list",
+        "chat_history", "gdelt_search",
         # GitHub Issues
         "list_github_issues", "get_github_issue",
         # Evolution scouting — search GitHub and analyse external repos
         "github_search",
         "external_repo_sync", "external_repo_list", "external_repo_read",
-        # Telegram user-mode — proactive outreach, channel/group reading
-        "tg_send", "tg_read", "tg_list_chats", "tg_join", "tg_search", "tg_get_me",
+        # Telegram user-mode — safe in background: tools use command queue bridge
+        # (telegram_bot.py sends commands to tg_listener via multiprocessing.Queue,
+        #  no direct Telethon connection → zero SQLite locking)
+        "tg_send", "tg_read", "tg_get_me", "tg_get_entity",
+        "tg_list_chats", "tg_search", "tg_join", "tg_connect",
         # Email — read, search, send, reply
         "email_read", "email_search", "email_send", "email_reply",
         # LinkedIn
         "linkedin_get_me", "linkedin_get_invitations", "linkedin_accept_invitation",
-        "linkedin_get_messages", "linkedin_send_message",
+        "linkedin_get_messages", "linkedin_send_message", "linkedin_refresh_cookies",
     })
 
     def _build_registry(self) -> "ToolRegistry":
@@ -396,7 +402,7 @@ class BackgroundConsciousness:
 
         # Register consciousness-specific tool (modifies self._next_wakeup_sec)
         def _set_next_wakeup(ctx: Any, seconds: int = 300) -> str:
-            self._next_wakeup_sec = max(60, min(3600, int(seconds)))
+            self._next_wakeup_sec = max(30, min(300, int(seconds)))
             return f"OK: next wakeup in {self._next_wakeup_sec}s"
 
         registry.register(ToolEntry("set_next_wakeup", {

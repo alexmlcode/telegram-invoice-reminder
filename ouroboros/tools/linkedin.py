@@ -218,6 +218,30 @@ def _linkedin_send_message(ctx: ToolContext, conversation_urn: str, text: str) -
 
 
 # ---------------------------------------------------------------------------
+# Cookie refresh tool
+# ---------------------------------------------------------------------------
+
+def _linkedin_refresh_cookies(ctx: ToolContext) -> str:
+    """Use Playwright stealth to log in to LinkedIn and refresh session cookies."""
+    try:
+        from supervisor.linkedin_cookie_refresh import refresh_cookies
+        ok = refresh_cookies(force=True)
+        if ok:
+            li_at = os.environ.get("LINKEDIN_LI_AT", "")
+            return json.dumps({
+                "refreshed": True,
+                "li_at_preview": li_at[:20] + "..." if li_at else "(empty)",
+                "message": "Cookies updated in env and .env file. linkedin_listener will use them on next poll.",
+            }, ensure_ascii=False, indent=2)
+        return json.dumps({
+            "refreshed": False,
+            "message": "Refresh failed. Check logs for details (CAPTCHA, wrong credentials, network).",
+        }, ensure_ascii=False, indent=2)
+    except Exception as e:
+        return json.dumps({"refreshed": False, "error": str(e)}, ensure_ascii=False, indent=2)
+
+
+# ---------------------------------------------------------------------------
 # Tool registration
 # ---------------------------------------------------------------------------
 
@@ -273,4 +297,16 @@ def get_tools() -> List[ToolEntry]:
                 "text": {"type": "string", "description": "Message text to send"},
             }, "required": ["conversation_urn", "text"]},
         }, _linkedin_send_message, timeout_sec=20),
+
+        ToolEntry("linkedin_refresh_cookies", {
+            "name": "linkedin_refresh_cookies",
+            "description": (
+                "Auto-refresh LinkedIn session cookies using Playwright stealth browser login. "
+                "Use when linkedin_get_me() returns 'Redirect (session expired)' or when "
+                "linkedin_listener reports session expiry. "
+                "Requires LINKEDIN_EMAIL and LINKEDIN_PASSWORD env vars. "
+                "Updates LINKEDIN_LI_AT and LINKEDIN_JSESSIONID in env and .env file."
+            ),
+            "parameters": {"type": "object", "properties": {}},
+        }, _linkedin_refresh_cookies, timeout_sec=120),
     ]

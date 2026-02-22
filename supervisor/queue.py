@@ -70,9 +70,11 @@ def init_queue_refs(pending: List[Dict[str, Any]], running: Dict[str, Dict[str, 
 
 def _task_priority(task_type: str) -> int:
     t = str(task_type or "").strip().lower()
+    if t == "user_chat":
+        return -1   # Telegram DMs/mentions — always first
     if t in ("task", "review"):
         return 0
-    if t == "evolution":
+    if t in ("evolution", "scout"):
         return 1
     return 2
 
