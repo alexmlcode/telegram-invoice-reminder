@@ -1,330 +1,3 @@
-"""
-Telethon background listener + Telegram service for the @alessiper user account.
-
-Handles:
-  - Private DMs → "tg_user_message" events
-  - Group/supergroup mentions → "tg_group_mention" events (only when @alessiper is
-    mentioned, replied-to, or the message is a reply to one of our messages)
-  - Command queue → worker processes send Telegram commands here and receive results
-
-Architecture: ONE permanent TelegramClient in the listener thread.
-All agent tools communicate via _cmd_queue (multiprocessing.Queue).
-This eliminates concurrent SQLite session access and "database is locked" errors.
-
-  Worker process:
-      result_q = multiprocessing.Queue()
-      _cmd_queue.put({"method": "send_message", "kwargs": {...}, "result_q": result_q})
-      resp = result_q.get(timeout=30)  # {"ok": True, "result": {...}}
-
-Runs in a daemon thread with its own asyncio event loop.
-On each qualifying message, puts a dict into a thread-safe Queue.
-The supervisor main loop drains this queue and creates user_chat tasks.
-"""
-from __future__ import annotations
-
-import asyncio
-import logging
-import multiprocessing
-import queue
-import threading
-import time
-from typing import Any, Dict, Optional
-
-log = logging.getLogger(__name__)
-
-
-def _patch_telethon_sqlite() -> None:
-    """Patch Telethon's SQLiteSession to use WAL journal + 10s busy timeout.
-
-    WAL mode allows concurrent readers while one writer is active.
-    With command-queue architecture this is belt-and-suspenders protection.
-    """
-    try:
-        from telethon.sessions import sqlite as _tl_sq
-        _orig_cursor = _tl_sq.SQLiteSession._cursor
-
-        def _patched_cursor(self):
-            cursor = _orig_cursor(self)
-            if getattr(self, "_wal_patched", False):
-                return cursor
-            try:
-                self._conn.execute("PRAGMA journal_mode=WAL")
-                self._conn.execute("PRAGMA busy_timeout=10000")
-            except Exception:
-                pass
-            self._wal_patched = True
-            return cursor
-
-        _tl_sq.SQLiteSession._cursor = _patched_cursor
-    except Exception as e:
-        log.debug("Telethon WAL patch skipped: %s", e)
-
-
-_patch_telethon_sqlite()
-
-# ── Queues ────────────────────────────────────────────────────────────────────
-# Incoming events (DMs, mentions) → supervisor main loop
-_listener_queue: queue.Queue = queue.Queue()
-
-# Outgoing commands → listener async loop (multiprocessing-safe, fork-inherited)
-_cmd_queue: multiprocessing.Queue = multiprocessing.Queue()
-
-# Thread-safe command queue for same-process callers (consciousness, main loop).
-# Avoids pickling Queue objects into multiprocessing.Queue.
-_local_cmd_queue: queue.Queue = queue.Queue()
-
-# Pre-fork result queue: listener → worker processes (by correlation ID).
-# Workers put corr_id in cmd, listener puts result here. Workers filter by corr_id.
-_worker_result_queue: multiprocessing.Queue = multiprocessing.Queue()
-
-_listener_thread: Optional[threading.Thread] = None
-_stop_event = threading.Event()
-
-# Retry delay on auth failure
-_AUTH_RETRY_SEC = 120
-
-
-def get_queue() -> queue.Queue:
-    return _listener_queue
-
-
-def get_cmd_queue() -> multiprocessing.Queue:
-    """Return the command queue. Imported by telegram_bot tools at module level."""
-    return _cmd_queue
-
-
-def get_local_cmd_queue() -> queue.Queue:
-    """Thread-safe command queue for calls from the main process (no pickling)."""
-    return _local_cmd_queue
-
-
-def get_worker_result_queue() -> multiprocessing.Queue:
-    """Pre-fork result queue for worker → main communication (by corr_id)."""
-    return _worker_result_queue
-
-
-def start(session_path: str, api_id: int, api_hash: str,
-          owner_tg_id: Optional[int] = None) -> queue.Queue:
-    """Start Telethon listener in background daemon thread. Returns the event queue."""
-    global _listener_thread
-    if _listener_thread is not None and _listener_thread.is_alive():
-        return _listener_queue
-
-    _stop_event.clear()
-
-    def _run():
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        while not _stop_event.is_set():
-            try:
-                loop.run_until_complete(
-                    _listener_loop(session_path, api_id, api_hash, owner_tg_id)
-                )
-            except Exception as exc:
-                log.warning("tg_listener error: %s — reconnecting in 30s", exc)
-                time.sleep(30)
-
-    _listener_thread = threading.Thread(target=_run, daemon=True, name="tg-listener")
-    _listener_thread.start()
-    log.info("Telethon user-mode listener started (session=%s)", session_path)
-    return _listener_queue
-
-
-def stop() -> None:
-    _stop_event.set()
-
-
-def is_running() -> bool:
-    return _listener_thread is not None and _listener_thread.is_alive()
-
-
-# ── Entity formatting (shared between listener and command executor) ───────────
-
-def _fmt_entity(e) -> Dict[str, Any]:
-    """Format a Telegram entity to a plain dict for JSON serialisation."""
-    try:
-        from telethon.tl.types import User, Chat, Channel
-        if isinstance(e, User):
-            return {"type": "user", "id": e.id,
-                    "name": f"{e.first_name or ''} {e.last_name or ''}".strip(),
-                    "username": e.username or ""}
-        if isinstance(e, Channel):
-            t = "channel" if e.broadcast else "supergroup"
-            return {"type": t, "id": e.id, "name": e.title or "",
-                    "username": e.username or ""}
-        if isinstance(e, Chat):
-            return {"type": "group", "id": e.id, "name": e.title or ""}
-    except Exception:
-        pass
-    return {"type": "unknown", "id": getattr(e, "id", None)}
-
-
-# ── Command dispatcher ─────────────────────────────────────────────────────────
-
-# Per-command timeout — if a Telethon call hangs (stale connection, rate limit,
-# network blip), we return an error instead of blocking forever.
-_CMD_TIMEOUT_SEC = 20
-
-# Consecutive failures → force reconnect
-_consecutive_failures: int = 0
-_RECONNECT_THRESHOLD = 3
-
-
-async def _execute_cmd(client, cmd: dict) -> None:
-    """Execute one Telegram command and deliver result to caller.
-
-    Two delivery paths:
-    - result_q (queue.Queue): for main-process callers (consciousness). Direct put().
-    - corr_id (str): for worker-process callers. Result put to _worker_result_queue.
-    """
-    global _consecutive_failures
-    result_q = cmd.get("result_q")  # stdlib queue.Queue, or None
-    corr_id: Optional[str] = cmd.get("corr_id")  # for worker callers
-    if result_q is None and not corr_id:
-        return
-    method = cmd.get("method", "")
-    try:
-        result = await asyncio.wait_for(
-            _dispatch(client, method, cmd.get("kwargs", {})),
-            timeout=_CMD_TIMEOUT_SEC,
-        )
-        payload: dict = {"ok": True, "result": result}
-        _consecutive_failures = 0
-    except asyncio.TimeoutError:
-        log.warning("tg_listener: command %r timed out after %ds", method, _CMD_TIMEOUT_SEC)
-        payload = {"ok": False, "error": f"Telethon call {method!r} timed out after {_CMD_TIMEOUT_SEC}s"}
-        _consecutive_failures += 1
-    except Exception as exc:
-        log.warning("tg_listener: command %r failed: %s", method, exc)
-        payload = {"ok": False, "error": str(exc)}
-        _consecutive_failures += 1
-    if result_q is not None:
-        result_q.put(payload)
-    elif corr_id:
-        _worker_result_queue.put({"corr_id": corr_id, **payload})
-
-
-async def _dispatch(client, method: str, kw: dict) -> Any:
-    """Route a command to the appropriate Telethon call."""
-
-    if method == "send_message":
-        extra: Dict[str, Any] = {}
-        pm = kw.get("parse_mode", "")
-        if pm in ("markdown", "md"):
-            extra["parse_mode"] = "md"
-        elif pm == "html":
-            extra["parse_mode"] = "html"
-        if kw.get("reply_to"):
-            extra["reply_to"] = int(kw["reply_to"])
-        sent = await client.send_message(kw["entity"], kw["message"], **extra)
-        return {"sent": True, "message_id": sent.id, "to": kw["entity"]}
-
-    if method == "get_me":
-        me = await client.get_me()
-        return {
-            "id": me.id,
-            "name": f"{me.first_name or ''} {me.last_name or ''}".strip(),
-            "username": me.username or "",
-            "phone": getattr(me, "phone", "") or "",
-            "authorized": True,
-        }
-
-    if method == "get_entity":
-        e = await client.get_entity(kw["entity"])
-        return _fmt_entity(e)
-
-    if method == "iter_messages":
-        msgs = []
-        kwargs: Dict[str, Any] = {"limit": min(int(kw.get("limit", 20)), 100)}
-        if kw.get("min_id"):
-            kwargs["min_id"] = int(kw["min_id"])
-        async for msg in client.iter_messages(kw["entity"], **kwargs):
-            sender_str = ""
-            if msg.sender:
-                s = msg.sender
-                sender_str = (getattr(s, "username", None)
-                              or getattr(s, "first_name", None)
-                              or str(getattr(s, "id", "")))
-            elif msg.post:
-                sender_str = "[channel]"
-            msgs.append({
-                "id":              msg.id,
-                "date":            msg.date.isoformat() if msg.date else "",
-                "sender":          sender_str,
-                "text":            (msg.text or "")[:2000],
-                "is_reply":        bool(msg.reply_to_msg_id),
-                "reply_to_msg_id": msg.reply_to_msg_id,
-            })
-        return msgs
-
-    if method == "iter_dialogs":
-        from telethon.tl.types import User, Chat, Channel as _Ch
-        results = []
-        ft = kw.get("filter_type", "")
-        async for dialog in client.iter_dialogs(limit=min(int(kw.get("limit", 50)), 200)):
-            e = dialog.entity
-            if ft == "channels" and not (isinstance(e, _Ch) and e.broadcast):
-                continue
-            if ft == "groups" and not (isinstance(e, Chat) or
-                    (isinstance(e, _Ch) and not e.broadcast)):
-                continue
-            if ft == "users" and not isinstance(e, User):
-                continue
-            info = _fmt_entity(e)
-            info["unread"] = dialog.unread_count
-            info["last_msg_date"] = dialog.date.isoformat() if dialog.date else ""
-            results.append(info)
-        return results
-
-    if method == "join_channel":
-        from telethon.tl.functions.channels import JoinChannelRequest
-        from telethon.tl.functions.messages import ImportChatInviteRequest
-        entity = kw["entity"]
-        if "joinchat/" in entity or entity.startswith("+"):
-            hash_ = entity.split("/")[-1].lstrip("+")
-            await client(ImportChatInviteRequest(hash_))
-        else:
-            await client(JoinChannelRequest(entity))
-        return {"joined": True, "entity": entity}
-
-    if method == "search_contacts":
-        from telethon.tl.functions.contacts import SearchRequest
-        result = await client(SearchRequest(q=kw["query"],
-                                            limit=min(int(kw.get("limit", 10)), 50)))
-        return [_fmt_entity(e) for e in result.chats]
-
-    raise ValueError(f"Unknown tg_listener command: {method!r}")
-
-
-# ── Mention detection ──────────────────────────────────────────────────────────
-
-async def _is_mentioned(event: Any, me_id: int, my_username: Optional[str]) -> bool:
-    """Return True if our account is mentioned or the message is a reply to us."""
-    msg = event.message
-    text = (msg.text or "").lower()
-
-    if my_username and f"@{my_username.lower()}" in text:
-        return True
-
-    if msg.entities:
-        for ent in msg.entities:
-            uid = getattr(ent, "user_id", None)
-            if uid is not None and uid == me_id:
-                return True
-
-    if getattr(msg, "reply_to", None) and getattr(msg.reply_to, "reply_to_msg_id", None):
-        try:
-            replied = await event.get_reply_message()
-            if replied and replied.sender_id == me_id:
-                return True
-        except Exception:
-            pass
-
-    return False
-
-
-# ── Main listener loop ─────────────────────────────────────────────────────────
-
 async def _listener_loop(session_path: str, api_id: int, api_hash: str,
                           owner_tg_id: Optional[int]) -> None:
     try:
@@ -357,7 +30,7 @@ async def _listener_loop(session_path: str, api_id: int, api_hash: str,
         @client.on(events.NewMessage(incoming=True))
         async def _on_message(event):
             msg = event.message
-            if not msg or not (msg.text or "").strip():
+            if not msg or not ((msg.text or "").strip() or msg.document):
                 return
 
             sender = await event.get_sender()
@@ -377,10 +50,18 @@ async def _listener_loop(session_path: str, api_id: int, api_hash: str,
             if getattr(msg, "reply_to", None):
                 reply_to_msg_id = getattr(msg.reply_to, "reply_to_msg_id", None)
 
+            # Extract text, prioritizing documents for private messages
+            text_content = msg.text or ""
+            if event.is_private and msg.document:
+                doc = msg.document
+                doc_id = getattr(doc, "id", "")
+                doc_mime = getattr(doc, "mime_type", "unknown")
+                text_content = f"[Document received: id={doc_id}, mime={doc_mime}] " + text_content
+
             if event.is_private:
                 if owner_tg_id and sender_id == owner_tg_id:
                     return
-                log.info("tg_listener: DM from %s (@%s): %.80s", name, uname, msg.text)
+                log.info("tg_listener: DM from %s (@%s): %.80s", name, uname, text_content)
                 _listener_queue.put({
                     "type":            "tg_user_message",
                     "chat_type":       "private",
@@ -391,7 +72,7 @@ async def _listener_loop(session_path: str, api_id: int, api_hash: str,
                     "sender_id":       sender_id,
                     "sender_name":     name,
                     "sender_username": uname,
-                    "text":            msg.text,
+                    "text":            text_content,
                 })
 
             elif event.is_group or event.is_channel:
@@ -405,10 +86,10 @@ async def _listener_loop(session_path: str, api_id: int, api_hash: str,
                     chat_title = str(event.chat_id)
 
                 log.info("tg_listener: GROUP_MENTION in '%s' from %s (@%s): %.80s",
-                         chat_title, name, uname, msg.text)
+                         chat_title, name, uname, text_content)
                 _listener_queue.put({
                     "type":            "tg_group_mention",
-                    "chat_type":       "group",
+                    "chat_type":       "group" if event.is_group else "channel",
                     "chat_id":         event.chat_id,
                     "chat_title":      chat_title,
                     "msg_id":          msg.id,
@@ -416,55 +97,9 @@ async def _listener_loop(session_path: str, api_id: int, api_hash: str,
                     "sender_id":       sender_id,
                     "sender_name":     name,
                     "sender_username": uname,
-                    "text":            msg.text,
+                    "text":            text_content,
                 })
 
-        # ── Service loop: drain command queue + keep Telethon alive ──────────
-        # Replaces run_until_disconnected() so we can process outgoing commands
-        # through the same client without opening additional connections.
-        _KEEPALIVE_SEC = 60
-        _last_keepalive = time.monotonic()
-
-        while not _stop_event.is_set():
-            if not client.is_connected():
-                log.warning("tg_listener: client disconnected, will reconnect")
-                break  # outer while will reconnect
-
-            # Force reconnect if too many commands failed in a row
-            if _consecutive_failures >= _RECONNECT_THRESHOLD:
-                log.warning(
-                    "tg_listener: %d consecutive failures, forcing reconnect",
-                    _consecutive_failures,
-                )
-                break
-
-            # Keepalive: ping Telegram every 60s to detect stale connections
-            now = time.monotonic()
-            if now - _last_keepalive >= _KEEPALIVE_SEC:
-                _last_keepalive = now
-                try:
-                    await asyncio.wait_for(client.get_me(), timeout=10)
-                except Exception as exc:
-                    log.warning("tg_listener: keepalive ping failed: %s — reconnecting", exc)
-                    break
-
-            # Drain pending commands (non-blocking)
-            # _cmd_queue: from worker processes (forked, inherited FDs)
-            # _local_cmd_queue: from main process (consciousness, thread-safe)
-            for _cq in (_cmd_queue, _local_cmd_queue):
-                while True:
-                    try:
-                        cmd = _cq.get_nowait()
-                        asyncio.ensure_future(_execute_cmd(client, cmd))
-                    except Exception:
-                        break
-
-            # Yield to event loop — Telethon processes received updates here
-            await asyncio.sleep(0.05)
-
-    finally:
-        try:
-            if client.is_connected():
-                await client.disconnect()
-        except Exception:
-            pass
+    except Exception as exc:
+        log.error("tg_listener: fatal error: %s", exc)
+        _stop_event.set()
