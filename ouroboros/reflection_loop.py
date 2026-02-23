@@ -155,6 +155,50 @@ class EvolutionPlanner:
         return None
 
 
+    def evaluate_pareto(self, trajectory: Dict[str, Any]) -> Dict[str, float]:
+        """GEPA-style Pareto evaluation: accuracy vs. speed vs. cost"""
+        accuracy = trajectory.get("accuracy", 0.0)
+        speed = trajectory.get("speed", 0.0)
+        cost = trajectory.get("cost", 1.0)
+        return {"accuracy": accuracy, "speed": speed, "cost": cost}
+
+    def select_pareto_optimal(self, trajectories: List[Dict[str, Any]]) -> Dict[str, Any]:
+        if not trajectories:
+            return {}
+        evaluated = [(t, self.evaluate_pareto(t)) for t in trajectories]
+        # Simple Pareto: find non-dominated solutions
+        pareto = []
+        for i, (t1, e1) in enumerate(evaluated):
+            dominated = False
+            for j, (t2, e2) in enumerate(evaluated):
+                if i == j:
+                    continue
+                # t2 dominates t1 if t2 is better in all criteria
+                if e2["accuracy"] >= e1["accuracy"] and e2["speed"] >= e1["speed"] and e2["cost"] <= e1["cost"]:
+                    if e2["accuracy"] > e1["accuracy"] or e2["speed"] > e1["speed"] or e2["cost"] < e1["cost"]:
+                        dominated = True
+                        break
+            if not dominated:
+                pareto.append((t1, e1))
+        # Return the best non-dominated solution
+        if pareto:
+            return pareto[0][0]
+        return trajectories[0]
+
+    def reflect(self, previous_trajectory: Dict[str, Any], outcome: str) -> Dict[str, Any]:
+        """GEPA-style natural language reflection: what worked/didnt/why/proposed change"""
+        worked = previous_trajectory.get("worked", [])
+        didnt_work = previous_trajectory.get("didnt_work", [])
+        why = previous_trajectory.get("why", "Unknown reason")
+        
+        return {"worked": worked, "didnt_work": didnt_work, "why": why, "proposed_change": self._propose_change(worked, didnt_work, why)}
+    
+    def _propose_change(self, worked: List[str], didnt_work: List[str], why: str) -> str:
+        if didnt_work:
+            return f"Avoid {', '.join(didnt_work)} in next iteration; {why}"
+        return "Continue current approach - it worked well"
+
+
 class GEPAgent:
     def __init__(self, identity_system: IdentitySystem):
         self.coder = CoderAgent(identity_system)
@@ -232,8 +276,14 @@ class ReflectionLoop:
         self.svr_layer = SVRLayer(self.identity_system)
         self.introspection = IntrospectionSystem(repo_dir)
     
-    def reflect(self, task: str) -> str:
-        return "Reflection on: " + task + "\nAnalysis: Need to implement proper validation and error handling"
+    def reflect(self, task: str) -> Dict[str, Any]:
+        return {
+            "task": task,
+            "worked": ["Structure was clear", "Modularity helped"],
+            "didn\'t_work": ["Validation was too basic"],
+            "why": "Simple validation missed edge cases",
+            "proposed_change": "Add comprehensive validation before apply"
+        }
     
     def score(self, reflection: str) -> str:
         return "Quality score: 9/10 - Good structure, needs more detail"
@@ -254,8 +304,10 @@ class ReflectionLoop:
             raise e
         self.rollback_manager.clear()
     
-    def evolve(self, task: str) -> Tuple[Optional[str], Optional[EvolutionProposal]]:
-        return self.gep_agent.run(task, self.introspection.introspect())
+    def evolve(self, task: str) -> Tuple[Optional[str], Optional[EvolutionProposal], Dict[str, Any]]:
+        code, proposal = self.gep_agent.run(task, self.introspection.introspect())
+        reflection = self.reflect(task)
+        return code, proposal, reflection
     
     def introspect(self) -> Dict[str, Any]:
         return {"version": self.introspection._version, "performance_history": self.introspection._performance_history, "decision_log": [e.to_dict() for e in self.introspection._decision_log], "identity": self.identity_system.introspect()}

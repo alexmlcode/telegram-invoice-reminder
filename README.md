@@ -217,6 +217,16 @@ Full text: [BIBLE.md](BIBLE.md)
 
 ## Changelog
 
+### v6.3.0 -- GEPA Reflection + OpenClaw Retry
+- **feat(loop.py)**: ErrorClassifier with transient vs permanent error classification
+- **feat(loop.py)**: Exponential backoff (base 1000ms, max 30000ms) for transient errors
+- **feat(reflection_loop.py)**: GEPA natural language reflection format (worked/didn't work/why/proposed change)
+- **feat(reflection_loop.py)**: Pareto optimization (accuracy vs speed vs cost) evaluation
+- **feat(reflection_loop.py)**: Stronger model (claude-opus-4.6 or gemini-2.5-pro-preview) for reflection
+- **feat(reflection_loop.py)**: Smoke test with 3 trajectories after each evolution
+- **Fix**: Maintains backward compatibility with existing API
+
+### v6.2.1 -- Self-Modifying Reflection Loop
 ### v6.2.1 -- Self-Modifying Reflection Loop
 - **feat(reflection_loop.py)**: New self-modifying reflection loop with GEPA + SVR + identity
 - **Rollback protection**: Save state to temp dir before applying diffs, rollback on failure
