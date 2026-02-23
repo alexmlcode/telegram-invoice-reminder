@@ -107,8 +107,8 @@ def _opencode_edit(ctx: ToolContext, prompt: str, cwd: str = "") -> str:
         except Exception as e:
             return f"⚠️ GIT_ERROR (checkout): {e}"
 
-        # OpenCode expects a prompt and works on the repository
-        cmd = [opencode_bin, "-p", prompt]
+        # OpenCode expects a message via 'run' command
+        cmd = [opencode_bin, "run", prompt]
         
         env = os.environ.copy()
         # Add bin to path just in case it needs other tools from its bundle
