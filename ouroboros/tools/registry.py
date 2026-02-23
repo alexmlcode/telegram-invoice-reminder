@@ -92,7 +92,7 @@ USER_CHAT_TOOLS = frozenset({
 CORE_TOOL_NAMES = {
     "repo_read", "repo_list", "repo_write_commit", "repo_commit_push",
     "drive_read", "drive_list", "drive_write",
-    "run_shell", "claude_code_edit",
+    "run_shell", "opencode_edit", "run_linter", "apply_patch", "gemini_programming",
     "git_status", "git_diff",
     "external_repo_sync", "external_repo_list", "external_repo_read",
     "schedule_task", "wait_for_task", "get_task_result",

@@ -1,4 +1,4 @@
-"""Shell tools: run_shell, claude_code_edit."""
+"""Shell tools: run_shell, opencode_edit, run_linter."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ import pathlib
 import shlex
 import shutil
 import subprocess
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from ouroboros.tools.registry import ToolContext, ToolEntry
 from ouroboros.utils import utc_now_iso, run_cmd, append_jsonl, truncate_for_log
@@ -84,98 +84,13 @@ def _run_shell(ctx: ToolContext, cmd, cwd: str = "") -> str:
         return f"⚠️ SHELL_ERROR: {e}"
 
 
-def _run_claude_cli(work_dir: str, prompt: str, env: dict) -> subprocess.CompletedProcess:
-    """Run Claude CLI with permission-mode fallback."""
-    claude_bin = shutil.which("claude")
-    cmd = [
-        claude_bin, "-p", prompt,
-        "--output-format", "json",
-        "--max-turns", "12",
-        "--tools", "Read,Edit,Grep,Glob",
-    ]
-
-    # Try --permission-mode first, fallback to --dangerously-skip-permissions
-    perm_mode = os.environ.get("OUROBOROS_CLAUDE_CODE_PERMISSION_MODE", "bypassPermissions").strip()
-    primary_cmd = cmd + ["--permission-mode", perm_mode]
-    legacy_cmd = cmd + ["--dangerously-skip-permissions"]
-
-    res = subprocess.run(
-        primary_cmd, cwd=work_dir,
-        capture_output=True, text=True, timeout=300, env=env,
-    )
-
-    if res.returncode != 0:
-        combined = ((res.stdout or "") + "\n" + (res.stderr or "")).lower()
-        if "--permission-mode" in combined and any(
-            m in combined for m in ("unknown option", "unknown argument", "unrecognized option", "unexpected argument")
-        ):
-            res = subprocess.run(
-                legacy_cmd, cwd=work_dir,
-                capture_output=True, text=True, timeout=300, env=env,
-            )
-
-    return res
-
-
-def _check_uncommitted_changes(repo_dir: pathlib.Path) -> str:
-    """Check git status after edit, return warning string or empty string."""
-    try:
-        status_res = subprocess.run(
-            ["git", "status", "--porcelain"],
-            cwd=repo_dir,
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        if status_res.returncode == 0 and status_res.stdout.strip():
-            diff_res = subprocess.run(
-                ["git", "diff", "--stat"],
-                cwd=repo_dir,
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
-            if diff_res.returncode == 0 and diff_res.stdout.strip():
-                return (
-                    f"\n\n⚠️ UNCOMMITTED CHANGES detected after Claude Code edit:\n"
-                    f"{diff_res.stdout.strip()}\n"
-                    f"Remember to run git_status and repo_commit_push!"
-                )
-    except Exception as e:
-        log.debug("Failed to check git status after claude_code_edit: %s", e, exc_info=True)
-    return ""
-
-
-def _parse_claude_output(stdout: str, ctx: ToolContext) -> str:
-    """Parse JSON output and emit cost event, return result string."""
-    try:
-        payload = json.loads(stdout)
-        out: Dict[str, Any] = {
-            "result": payload.get("result", ""),
-            "session_id": payload.get("session_id"),
-        }
-        if isinstance(payload.get("total_cost_usd"), (int, float)):
-            ctx.pending_events.append({
-                "type": "llm_usage",
-                "provider": "claude_code_cli",
-                "usage": {"cost": float(payload["total_cost_usd"])},
-                "source": "claude_code_edit",
-                "ts": utc_now_iso(),
-                "category": "task",
-            })
-        return json.dumps(out, ensure_ascii=False, indent=2)
-    except Exception:
-        log.debug("Failed to parse claude_code_edit JSON output", exc_info=True)
-        return stdout
-
-
-def _claude_code_edit(ctx: ToolContext, prompt: str, cwd: str = "") -> str:
-    """Delegate code edits to Claude Code CLI."""
+def _opencode_edit(ctx: ToolContext, prompt: str, cwd: str = "") -> str:
+    """Delegate code edits to OpenCode CLI. Can take up to 1 hour."""
     from ouroboros.tools.git import _acquire_git_lock, _release_git_lock
 
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-    if not api_key:
-        return "⚠️ ANTHROPIC_API_KEY not set, claude_code_edit unavailable."
+    opencode_bin = "/home/a/.opencode/bin/opencode"
+    if not os.path.exists(opencode_bin):
+        return "⚠️ OpenCode CLI not found at /home/a/.opencode/bin/opencode."
 
     work_dir = str(ctx.repo_dir)
     if cwd and cwd.strip() not in ("", ".", "./"):
@@ -183,11 +98,7 @@ def _claude_code_edit(ctx: ToolContext, prompt: str, cwd: str = "") -> str:
         if candidate.exists():
             work_dir = str(candidate)
 
-    claude_bin = shutil.which("claude")
-    if not claude_bin:
-        return "⚠️ Claude CLI not found. Ensure ANTHROPIC_API_KEY is set."
-
-    ctx.emit_progress_fn("Delegating to Claude Code CLI...")
+    ctx.emit_progress_fn("Delegating to OpenCode CLI (this may take a long time)...")
 
     lock = _acquire_git_lock(ctx)
     try:
@@ -196,47 +107,63 @@ def _claude_code_edit(ctx: ToolContext, prompt: str, cwd: str = "") -> str:
         except Exception as e:
             return f"⚠️ GIT_ERROR (checkout): {e}"
 
-        full_prompt = (
-            f"STRICT: Only modify files inside {work_dir}. "
-            f"Git branch: {ctx.branch_dev}. Do NOT commit or push.\n\n"
-            f"{prompt}"
-        )
-
+        # OpenCode expects a prompt and works on the repository
+        cmd = [opencode_bin, "-p", prompt]
+        
         env = os.environ.copy()
-        env["ANTHROPIC_API_KEY"] = api_key
-        try:
-            if hasattr(os, "geteuid") and os.geteuid() == 0:
-                env.setdefault("IS_SANDBOX", "1")
-        except Exception:
-            log.debug("Failed to check geteuid for sandbox detection", exc_info=True)
-            pass
-        local_bin = str(pathlib.Path.home() / ".local" / "bin")
-        if local_bin not in env.get("PATH", ""):
-            env["PATH"] = f"{local_bin}:{env.get('PATH', '')}"
+        # Add bin to path just in case it needs other tools from its bundle
+        env["PATH"] = f"/home/a/.opencode/bin:{env.get('PATH', '')}"
 
-        res = _run_claude_cli(work_dir, full_prompt, env)
+        res = subprocess.run(
+            cmd, cwd=work_dir,
+            capture_output=True, text=True, timeout=3600, env=env,
+        )
 
         stdout = (res.stdout or "").strip()
         stderr = (res.stderr or "").strip()
-        if res.returncode != 0:
-            return f"⚠️ CLAUDE_CODE_ERROR: exit={res.returncode}\nSTDOUT:\n{stdout}\nSTDERR:\n{stderr}"
-        if not stdout:
-            stdout = "OK: Claude Code completed with empty output."
+        
+        # Check git status after edit
+        status = ""
+        try:
+            status_res = subprocess.run(["git", "status", "--porcelain"], cwd=ctx.repo_dir, capture_output=True, text=True, timeout=10)
+            if status_res.stdout.strip():
+                status = f"\n\n⚠️ UNCOMMITTED CHANGES detected after OpenCode edit:\n{status_res.stdout.strip()}"
+        except Exception:
+            pass
 
-        # Check for uncommitted changes and append warning BEFORE finally block
-        warning = _check_uncommitted_changes(ctx.repo_dir)
-        if warning:
-            stdout += warning
+        if res.returncode != 0:
+            return f"⚠️ OPENCODE_ERROR: exit={res.returncode}\nSTDOUT:\n{stdout}\nSTDERR:\n{stderr}{status}"
+        
+        return f"OK: OpenCode completed.\nSTDOUT:\n{stdout}{status}"
 
     except subprocess.TimeoutExpired:
-        return "⚠️ CLAUDE_CODE_TIMEOUT: exceeded 300s."
+        return "⚠️ OPENCODE_TIMEOUT: exceeded 3600s."
     except Exception as e:
-        return f"⚠️ CLAUDE_CODE_FAILED: {type(e).__name__}: {e}"
+        return f"⚠️ OPENCODE_FAILED: {type(e).__name__}: {e}"
     finally:
         _release_git_lock(lock)
 
-    # Parse JSON output and account cost
-    return _parse_claude_output(stdout, ctx)
+
+def _run_linter(ctx: ToolContext, path: str) -> str:
+    """Check Python file for syntax errors using py_compile."""
+    full_path = ctx.repo_path(path)
+    if not full_path.exists():
+        return f"⚠️ LINTER_ERROR: file not found: {path}"
+    
+    if not path.endswith(".py"):
+        return f"⚠️ LINTER_SKIP: Not a Python file: {path}"
+
+    try:
+        res = subprocess.run(
+            ["python3", "-m", "py_compile", str(full_path)],
+            capture_output=True, text=True, timeout=30
+        )
+        if res.returncode == 0:
+            return f"✅ LINTER_OK: {path} is syntactically correct."
+        else:
+            return f"❌ LINTER_FAIL: {path} has syntax errors.\n{res.stderr}"
+    except Exception as e:
+        return f"⚠️ LINTER_ERROR: {e}"
 
 
 def get_tools() -> List[ToolEntry]:
@@ -249,12 +176,19 @@ def get_tools() -> List[ToolEntry]:
                 "cwd": {"type": "string", "default": ""},
             }, "required": ["cmd"]},
         }, _run_shell, is_code_tool=True),
-        ToolEntry("claude_code_edit", {
-            "name": "claude_code_edit",
-            "description": "Delegate code edits to Claude Code CLI. Preferred for multi-file changes and refactors. Follow with repo_commit_push.",
+        ToolEntry("opencode_edit", {
+            "name": "opencode_edit",
+            "description": "Delegate code edits to OpenCode CLI. Preferred for complex refactors. NOTE: This tool can run for up to 1 hour.",
             "parameters": {"type": "object", "properties": {
-                "prompt": {"type": "string"},
+                "prompt": {"type": "string", "description": "Instructions for OpenCode"},
                 "cwd": {"type": "string", "default": ""},
             }, "required": ["prompt"]},
-        }, _claude_code_edit, is_code_tool=True, timeout_sec=300),
+        }, _opencode_edit, is_code_tool=True, timeout_sec=3600),
+        ToolEntry("run_linter", {
+            "name": "run_linter",
+            "description": "Check a Python file for syntax errors. Use this after every manual edit.",
+            "parameters": {"type": "object", "properties": {
+                "path": {"type": "string", "description": "Relative path to the .py file"},
+            }, "required": ["path"]},
+        }, _run_linter, is_code_tool=True),
     ]
