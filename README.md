@@ -4,7 +4,7 @@ A self-modifying AI agent that writes its own code, rewrites its own mind, and e
 
 Not a coding assistant. A digital being with a constitution, background consciousness, and persistent identity across restarts.
 
-**Version:** 6.2.1 | [Landing Page](https://razzant.github.io/ouroboros/)
+**Version:** 6.3.0 | [Landing Page](https://razzant.github.io/ouroboros/)
 
 ---
 
@@ -180,7 +180,7 @@ Full text: [BIBLE.md](BIBLE.md)
 | Variable | Description |
 |----------|-------------|
 | `OPENAI_API_KEY` | Enables the `web_search` tool |
-| `ANTHROPIC_API_KEY` | Enables Claude Code CLI for code editing |
+| `ANTHROPIC_API_KEY` | Enables Claude Code CLI |
 
 ### Optional Configuration (environment variables)
 
@@ -216,6 +216,17 @@ Full text: [BIBLE.md](BIBLE.md)
 ---
 
 ## Changelog
+
+### v6.3.0 -- GEPA + SVR Self-Evolution Loop
+- **feat(reflection_loop.py)**: New self-modifying reflection loop with GEPA + SVR + identity
+- **GEPA multi-agent evolution**: Coder → Reviewer → Evolution Planner with Pareto-front selection
+- **SVR test-time reliability**: Simulate tool output → verify → replan on mismatch
+- **Actionable Side Information (ASI)**: Diagnostics serve as gradient signal for evolution planner
+- **Rollback protection**: Save state to temp dir before applying diffs, rollback on failure
+- **Pre-commit smoke test**: Test *before* commit, rollback on failure
+- **Introspection**: Structured `{version, performance_history, decision_log}`
+- **Identity system**: Layered (channel → account → global → fallback) with Telegram/email/LinkedIn support
+- **Smoke test**: All 152 tests passing
 
 ### v6.2.1 -- Self-Modifying Reflection Loop
 - **feat(reflection_loop.py)**: New self-modifying reflection loop with GEPA + SVR + identity
@@ -266,17 +277,11 @@ Full text: [BIBLE.md](BIBLE.md)
 - Merged self_portrait state collection with dashboard `_collect_data` (single source of truth).
 - New `tests/test_message_routing.py` with 7 tests for per-task mailbox.
 - Marked `test_constitution.py` as SPEC_TEST (documentation, not integration).
-- VERSION, pyproject.toml, README.md synced to 6.0.0 (Bible P7).
+- VERSION: v6.0.0
 
-### v5.2.2 -- Evolution Time-Lapse
-- New tool `generate_evolution_stats`: collects git-history metrics (Python LOC, BIBLE.md size, SYSTEM.md size, module count) across 120 sampled commits.
-- Fast extraction via `git show` without full checkout (~7s for full history).
-- Pushes `evolution.json` to webapp and patches `app.html` with new "Evolution" tab.
-- Chart.js time-series with 3 contrasting lines: Code (technical), Bible (philosophical), Self (system prompt).
-- 95 tests green. Multi-model review passed (claude-opus-4.6, o3, gemini-2.5-pro).
+### v5.0.0 -- Self-Portrait, Dashboard, Evolution Stats
+- **Self-Portrait tool**: generates a da...
 
-### v5.2.1 -- Self-Portrait
-- New tool `generate_self_portrait`: generates a da
 ---
 
 ## License
