@@ -861,6 +861,9 @@ def _call_llm_with_retry(
     msg = None
     last_error: Optional[Exception] = None
 
+    # Panic check: stop if same tool fails 3x in a row
+    if attempt >= 3 and _detect_panic_mode(history, fn_name, args):
+        raise RuntimeError(f"Panic mode: {fn_name} failed 3x in a row")
     for attempt in range(max_retries):
         try:
             kwargs = {"messages": messages, "model": model, "reasoning_effort": effort}
@@ -993,3 +996,4 @@ def _safe_args(v: Any) -> Any:
     except Exception:
         log.debug("Failed to serialize args for trace logging", exc_info=True)
         return {"_repr": repr(v)}
+# Panic mode detection: stop if same tool fails 3x in a row with same args
