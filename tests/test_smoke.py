@@ -89,7 +89,7 @@ EXPECTED_TOOLS = [
     "drive_read", "drive_write", "drive_list",
     "git_status", "git_diff",
     "external_repo_sync", "external_repo_list", "external_repo_read",
-    "run_shell", "claude_code_edit",
+    "run_shell", "opencode_edit", "run_linter", "apply_patch", "gemini_programming",
     "browse_page", "browser_action",
     "web_search", "github_search",
     # GDELT

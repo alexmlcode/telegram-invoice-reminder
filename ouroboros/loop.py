@@ -40,6 +40,8 @@ _MODEL_PRICING_STATIC = {
     "openai/gpt-4.1": (2.0, 0.50, 8.0),
     "openai/gpt-5.2": (1.75, 0.175, 14.0),
     "openai/gpt-5.2-codex": (1.75, 0.175, 14.0),
+    "qwen/qwen3-coder-next": (0.12, 0.012, 0.12),
+    "openai/gpt-5.3-codex": (1.5, 0.15, 12.0),
     "google/gemini-2.5-pro-preview": (1.25, 0.125, 10.0),
     "google/gemini-3-pro-preview": (2.0, 0.20, 12.0),
     "x-ai/grok-3-mini": (0.30, 0.03, 0.50),
@@ -117,6 +119,94 @@ READ_ONLY_PARALLEL_TOOLS = frozenset({
     "drive_read", "drive_list",
     "web_search", "codebase_digest", "chat_history",
 })
+class ErrorClassifier:
+    """
+    Classify LLM API errors as transient or permanent.
+    
+    Follows OpenClaw pattern:
+    - Transient: network issues, timeouts, rate limits, server errors
+    - Permanent: authentication errors, validation errors, user errors
+    
+    Only transient errors should be retried.
+    """
+    
+    @staticmethod
+    def classify(error: Exception) -> Tuple[bool, str]:
+        """
+        Classify an error as transient (True) or permanent (False).
+        
+        Returns: (is_transient, reason)
+        """
+        error_str = str(error).lower()
+        error_type = type(error).__name__.lower()
+        
+        # Transient: network issues
+        network_keywords = [
+            "connection", "network", "timeout", "timed out", "reset",
+            "broken pipe", "connection refused", "host unreachable",
+            "socket", "ssl", "tls", "handshake",
+        ]
+        for kw in network_keywords:
+            if kw in error_str or kw in error_type:
+                return True, f"Network-related: {kw}"
+        
+        # Transient: server errors (5xx)
+        import re as _re
+        server_error = _re.search(r"(status|code|http).*(5[0-9]{2})", error_str)
+        if server_error:
+            return True, f"Server error: {server_error.group(0)}"
+        
+        # Transient: rate limiting (429)
+        if "429" in error_str or "rate limit" in error_str:
+            return True, "Rate limit exceeded"
+        
+        # Transient: service unavailable
+        if "unavailable" in error_str or "service unavailable" in error_str:
+            return True, "Service unavailable"
+        
+        # Permanent: authentication errors (401, 403)
+        if "401" in error_str or "unauthorized" in error_str or "invalid.*token" in error_str:
+            return False, "Authentication error"
+        
+        if "403" in error_str or "forbidden" in error_str:
+            return False, "Authorization/permission error"
+        
+        # Permanent: validation errors (400)
+        if "400" in error_str or "invalid.*request" in error_str or "validation" in error_str:
+            return False, "Validation/invalid request error"
+        
+        # Permanent: model not found
+        if "model.*not.*found" in error_str or "unknown.*model" in error_str:
+            return False, "Model not found"
+        
+        # Permanent: context window exceeded
+        if "context.*window" in error_str or "tokens.*exceeded" in error_str:
+            return False, "Context window exceeded"
+        
+        # Permanent: usage limit exceeded (account-level)
+        if "quota" in error_str or "balance" in error_str or "credit" in error_str:
+            return False, "Account quota/balance exceeded"
+        
+        # Default: assume permanent (fail fast on unknown errors)
+        return False, f"Unknown error type: {error_type}"
+
+
+def exponential_backoff(attempt: int, base_ms: int = 1000, max_ms: int = 30000) -> float:
+    """
+    Calculate wait time for exponential backoff.
+    
+    Args:
+        attempt: Current attempt number (0-indexed)
+        base_ms: Base delay in milliseconds (default 1000)
+        max_ms: Maximum delay in milliseconds (default 30000)
+    
+    Returns:
+        Wait time in seconds
+    """
+    import math
+    wait_ms = min(base_ms * (2 ** attempt), max_ms)
+    return wait_ms / 1000.0
+
 
 # Workaround: some local LLMs emit tool calls as XML <tool_call>...</tool_call>
 # instead of structured OpenAI tool_calls. This parses and executes them normally.
@@ -906,7 +996,9 @@ def _call_llm_with_retry(
                 })
 
                 if attempt < max_retries - 1:
-                    time.sleep(2 ** attempt)
+                    wait = exponential_backoff(attempt)
+                    log.info("Waiting %.2fs before retry for empty response...", wait)
+                    time.sleep(wait)
                     continue
                 # Last attempt — return None to trigger "could not get response"
                 return None, cost
@@ -937,8 +1029,18 @@ def _call_llm_with_retry(
                 "round": round_idx, "attempt": attempt + 1,
                 "model": model, "error": repr(e),
             })
-            if attempt < max_retries - 1:
-                time.sleep(min(2 ** attempt * 2, 30))
+            # Error classification and exponential backoff
+            is_transient, reason = ErrorClassifier.classify(e)
+            if is_transient:
+                log.warning("Transient error (attempt %d/%d): %s", attempt + 1, max_retries, reason)
+                if attempt < max_retries - 1:
+                    wait = exponential_backoff(attempt)
+                    log.info("Waiting %.2fs before retry...", wait)
+                    time.sleep(wait)
+            else:
+                log.error("Permanent error: %s (failing immediately)", reason)
+                # Don't retry permanent errors
+                raise e
 
     return None, 0.0
 

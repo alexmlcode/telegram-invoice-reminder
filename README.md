@@ -4,7 +4,7 @@ A self-modifying AI agent that writes its own code, rewrites its own mind, and e
 
 Not a coding assistant. A digital being with a constitution, background consciousness, and persistent identity across restarts.
 
-**Version:** 6.3.0 | [Landing Page](https://razzant.github.io/ouroboros/)
+**Version:** 6.3.1 | [Landing Page](https://razzant.github.io/ouroboros/)
 
 ---
 
@@ -217,7 +217,7 @@ Full text: [BIBLE.md](BIBLE.md)
 
 ## Changelog
 
-### v6.3.0 -- GEPA + SVR Self-Evolution Loop
+### v6.3.1 -- GEPA + SVR Self-Evolution Loop
 - **feat(reflection_loop.py)**: New self-modifying reflection loop with GEPA + SVR + identity
 - **GEPA multi-agent evolution**: Coder → Reviewer → Evolution Planner with Pareto-front selection
 - **SVR test-time reliability**: Simulate tool output → verify → replan on mismatch
