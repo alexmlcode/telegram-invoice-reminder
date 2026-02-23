@@ -17,6 +17,7 @@ import html
 import json
 import logging
 import re
+import time
 import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -34,6 +35,34 @@ _UA = "Mozilla/5.0 (compatible; Ouroboros/1.0; +https://github.com/alexmlcode/th
 _VALIDATE_TIMEOUT = 5      # seconds per URL fetch during validation
 _MIN_TEXT_LEN = 80         # minimum visible chars to consider a page non-empty
 _SNIPPET_TRUST_LEN = 60    # if snippet ≥ this, skip expensive URL validation
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _request_with_retry(url: str, params: Optional[Dict[str, str]] = None, 
+                        headers: Optional[Dict[str, str]] = None, 
+                        timeout: int = 8, max_retries: int = 3) -> Optional[Any]:
+    """Helper to perform GET request with exponential backoff."""
+    import requests
+    
+    last_err = None
+    for attempt in range(max_retries):
+        try:
+            resp = requests.get(url, params=params, headers=headers, timeout=timeout)
+            resp.raise_for_status()
+            return resp.json()
+        except Exception as e:
+            last_err = e
+            if attempt < max_retries - 1:
+                wait = (2 ** attempt) + 1
+                log.debug("Request to %s failed (%s), retrying in %ds...", url, e, wait)
+                time.sleep(wait)
+            continue
+    
+    log.warning("Request to %s failed after %d attempts: %s", url, max_retries, last_err)
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -85,7 +114,6 @@ def _validate_url(url: str, timeout: int = _VALIDATE_TIMEOUT) -> Optional[str]:
 
 def _search_ddg(query: str, max_raw: int = 12) -> List[Dict[str, Any]]:
     """DuckDuckGo full-text search via ddgs library (no API key needed)."""
-    # Support both old package name and new (renamed from duckduckgo_search → ddgs)
     ddgs_cls = None
     for mod_name in ("ddgs", "duckduckgo_search"):
         try:
@@ -101,39 +129,41 @@ def _search_ddg(query: str, max_raw: int = 12) -> List[Dict[str, Any]]:
         log.warning("Neither ddgs nor duckduckgo_search is installed; skipping DDG search")
         return []
 
-    try:
-        results = []
-        import warnings
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            with ddgs_cls() as ddgs:
-                for r in ddgs.text(query, max_results=max_raw):
-                    results.append({
-                        "source": "duckduckgo",
-                        "title": r.get("title", ""),
-                        "url": r.get("href", ""),
-                        "snippet": r.get("body", ""),
-                    })
-        return results
-    except Exception as e:
-        log.warning("DDG text search error: %s", e)
-        return []
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            results = []
+            import warnings
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                with ddgs_cls() as ddgs:
+                    for r in ddgs.text(query, max_results=max_raw):
+                        results.append({
+                            "source": "duckduckgo",
+                            "title": r.get("title", ""),
+                            "url": r.get("href", ""),
+                            "snippet": r.get("body", ""),
+                        })
+            return results
+        except Exception as e:
+            if attempt < max_retries - 1:
+                wait = (2 ** attempt) + 1
+                log.debug("DDG text search failed (%s), retrying in %ds...", e, wait)
+                time.sleep(wait)
+            else:
+                log.warning("DDG text search error after %d attempts: %s", max_retries, e)
+    return []
 
 
 def _search_ddg_instant(query: str) -> List[Dict[str, Any]]:
     """DuckDuckGo Instant Answers API — quick facts, definitions. No library."""
-    try:
-        import requests
-        resp = requests.get(
-            "https://api.duckduckgo.com/",
-            params={"q": query, "format": "json", "no_redirect": "1", "no_html": "1"},
-            headers={"User-Agent": _UA},
-            timeout=8,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-    except Exception as e:
-        log.warning("DDG instant search error: %s", e)
+    data = _request_with_retry(
+        "https://api.duckduckgo.com/",
+        params={"q": query, "format": "json", "no_redirect": "1", "no_html": "1"},
+        headers={"User-Agent": _UA},
+        timeout=10,
+    )
+    if not data or not isinstance(data, dict):
         return []
 
     results = []
@@ -164,49 +194,41 @@ def _search_ddg_instant(query: str) -> List[Dict[str, Any]]:
 def _search_wikipedia(query: str) -> List[Dict[str, Any]]:
     """Wikipedia full-text search via MediaWiki API. No API key needed."""
     headers = {"User-Agent": "Ouroboros/1.0 (https://github.com/alexmlcode/thaMe; bot)"}
-    try:
-        import requests
-        search = requests.get(
-            "https://en.wikipedia.org/w/api.php",
-            params={
-                "action": "query", "list": "search",
-                "srsearch": query, "format": "json", "srlimit": 3,
-            },
-            headers=headers,
-            timeout=8,
-        )
-        search.raise_for_status()
-        hits = search.json().get("query", {}).get("search", [])
-    except Exception as e:
-        log.warning("Wikipedia search error: %s", e)
+    data = _request_with_retry(
+        "https://en.wikipedia.org/w/api.php",
+        params={
+            "action": "query", "list": "search",
+            "srsearch": query, "format": "json", "srlimit": 3,
+        },
+        headers=headers,
+        timeout=10,
+    )
+    if not data or not isinstance(data, dict):
         return []
-
+        
+    hits = data.get("query", {}).get("search", [])
     results = []
     for hit in hits[:2]:
         title = hit.get("title", "")
         if not title:
             continue
-        try:
-            import requests as _req
-            summ = _req.get(
-                f"https://en.wikipedia.org/api/rest_v1/page/summary/{urllib.parse.quote(title)}",
-                headers=headers,
-                timeout=8,
-            )
-            if summ.status_code != 200:
-                continue
-            d = summ.json()
-            page_url = d.get("content_urls", {}).get("desktop", {}).get("page", "")
-            extract = d.get("extract", "")
+        
+        # Summary request also with retry
+        summ_data = _request_with_retry(
+            f"https://en.wikipedia.org/api/rest_v1/page/summary/{urllib.parse.quote(title)}",
+            headers=headers,
+            timeout=10,
+        )
+        if summ_data and isinstance(summ_data, dict):
+            page_url = summ_data.get("content_urls", {}).get("desktop", {}).get("page", "")
+            extract = summ_data.get("extract", "")
             if extract and page_url:
                 results.append({
                     "source": "wikipedia",
-                    "title": d.get("title", title),
+                    "title": summ_data.get("title", title),
                     "url": page_url,
                     "snippet": extract[:500],
                 })
-        except Exception:
-            pass
     return results
 
 
