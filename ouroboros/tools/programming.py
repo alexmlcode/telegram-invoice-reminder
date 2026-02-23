@@ -43,7 +43,6 @@ def _gemini_programming(ctx: ToolContext, prompt: str, path: str) -> str:
         # --approval-mode yolo: for extra certainty
         cmd = [
             gemini_bin,
-            "--yolo",
             "--approval-mode", "yolo",
             "--prompt", f"In file {path}: {prompt}. Apply changes and exit."
         ]
