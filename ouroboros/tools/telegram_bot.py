@@ -33,7 +33,7 @@ _MAIN_PID: int = os.getpid()
 # Command queue bridge — talks to the single TelegramClient in tg_listener
 # ---------------------------------------------------------------------------
 
-def _tg_exec(method: str, timeout: float = 30, **kwargs) -> Any:
+def _tg_exec(method: str, timeout: float = 25, **kwargs) -> Any:
     """Send a command to the Telethon service and wait for result.
 
     Two code paths depending on caller:
@@ -212,7 +212,7 @@ def get_tools() -> List[ToolEntry]:
                              "description": "Message ID to reply to (for threaded replies in groups)",
                              "default": 0},
             }, "required": ["entity", "message"]},
-        }, _tg_send, timeout_sec=30),
+        }, _tg_send, timeout_sec=25),
 
         ToolEntry("tg_read", {
             "name": "tg_read",
@@ -263,7 +263,7 @@ def get_tools() -> List[ToolEntry]:
             "description": (
                 "Resolve a Telegram entity and return its type and info. "
                 "Returns type: 'user' | 'channel' | 'supergroup' | 'group'. "
-                "Use before replying to know if you're in a DM, group, or channel."
+                "Use before replying to know if you'm in a DM, group, or channel."
             ),
             "parameters": {"type": "object", "properties": {
                 "entity": {"type": "string",
