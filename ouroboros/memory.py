@@ -42,6 +42,9 @@ class Memory:
     def logs_path(self, name: str) -> pathlib.Path:
         return (self.drive_root / "logs" / name).resolve()
 
+    def _chat_history_path(self, chat_id: int) -> pathlib.Path:
+        return (self.drive_root / "memory" / "chat" / f"{chat_id}.jsonl").resolve()
+
     # --- Load / save ---
 
     def load_scratchpad(self) -> str:
@@ -74,9 +77,15 @@ class Memory:
 
     # --- Chat history ---
 
-    def chat_history(self, count: int = 100, offset: int = 0, search: str = "") -> str:
-        """Read from logs/chat.jsonl. count messages, offset from end, filter by search."""
-        chat_path = self.logs_path("chat.jsonl")
+    def chat_history(
+        self, chat_id: Optional[int] = None, count: int = 100, offset: int = 0, search: str = ""
+    ) -> str:
+        """Read from logs/chat.jsonl or memory/chat/{chat_id}.jsonl. chat_id=None => flat history."""
+        if chat_id is not None:
+            chat_path = self._chat_history_path(chat_id)
+        else:
+            chat_path = self.logs_path("chat.jsonl")
+
         if not chat_path.exists():
             return "(chat history is empty)"
 
@@ -120,6 +129,12 @@ class Memory:
             return f"Showing {len(entries)} messages:\n\n" + "\n".join(lines)
         except Exception as e:
             return f"(error reading history: {e})"
+
+    def save_chat_message(self, chat_id: int, message: Dict[str, Any]) -> None:
+        """Append a message to per-chat history file."""
+        chat_path = self._chat_history_path(chat_id)
+        chat_path.parent.mkdir(parents=True, exist_ok=True)
+        append_jsonl(chat_path, message)
 
     # --- JSONL tail reading ---
 
