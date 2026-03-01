@@ -1,0 +1,6 @@
+telethon
+openai
+pymupdf
+pdfplumber
+schedule
+python-dotenv
