@@ -3,12 +3,12 @@
 ## Phase 1: Core Loop (Day 1)
 
 ### 1.1 Invoice Upload
-- [ ] `/upload` handler — accepts PDF/text/image
-- [ ] Extract text from PDF using `PyMuPDF` or `pdfplumber`
-- [ ] Store raw text temporarily in memory (ephemeral)
+- [x] `/upload` handler — accepts PDF/text/image
+- [x] Extract text from PDF using `PyMuPDF` or `pdfplumber`
+- [x] Store raw text temporarily in memory (ephemeral)
 
 ### 1.2 LLM Extraction
-- [ ] Call OpenAI GPT-4o-mini with structured output schema:
+- [x] Call OpenAI GPT-4o-mini with structured output schema:
   ```json
   {
     "due_date": "YYYY-MM-DD or null",
@@ -17,12 +17,12 @@
     "invoice_id": "string or null"
   }
   ```
-- [ ] Handle parsing errors gracefully
+- [x] Handle parsing errors gracefully
 
 ### 1.3 Reminder Scheduling
-- [ ] `/remind +3d`, `/remind 2026-03-15`, `/remind 2026-03-15 15:00`
-- [ ] Parse relative/absolute dates
-- [ ] Insert into SQLite `reminders` table:
+- [x] `/remind +3d`, `/remind 2026-03-15`, `/remind 2026-03-15 15:00`
+- [x] Parse relative/absolute dates
+- [x] Insert into SQLite `reminders` table:
   ```sql
   CREATE TABLE reminders (
     id INTEGER PRIMARY KEY,
@@ -37,9 +37,9 @@
   ```
 
 ### 1.4 Reminder Execution
-- [ ] Background job runs every 15 minutes
-- [ ] Find reminders where `reminder_date <= now AND status = 'pending'`
-- [ ] Send Telegram message:
+- [x] Background job runs every 15 minutes
+- [x] Find reminders where `reminder_date <= now AND status = 'pending'`
+- [x] Send Telegram message:
   ```
   📝 Invoice Reminder
   Client: Acme Corp
@@ -48,41 +48,41 @@
   
   ⏳ 3 days remaining
   ```
-- [ ] Update `status = 'sent'`
+- [x] Update `status = 'sent'`
 
 ### 1.5 List Reminders
-- [ ] `/list` — show upcoming reminders (top 5)
-- [ ] Show status (pending/sent/overdue)
+- [x] `/list` — show upcoming reminders (top 5)
+- [x] Show status (pending/sent/overdue)
 
 ## Phase 2: Polish (Day 2)
 
 ### 2.1 Inline Buttons
-- [ ] Quick actions on each reminder:
+- [x] Quick actions on each reminder:
   - `+3d`, `+7d` — reschedule
   - ` Mark as paid` — set `status = 'paid'`
   - `Delete` — remove reminder
 
 ### 2.2 Error Handling
-- [ ] PDF parsing errors → show raw text preview
-- [ ] LLM extraction failures → fallback to manual input
-- [ ] SQLite errors → retry + alert
+- [x] PDF parsing errors → show raw text preview
+- [x] LLM extraction failures → fallback to manual input
+- [x] SQLite errors → retry + alert
 
 ### 2.3 Documentation
-- [ ] README update with demo GIF/screenshot
-- [ ] Setup guide (`pip install -r requirements.txt`, `.env` template)
-- [ ] MVP launch post for @indiehackers
+- [x] README update with demo GIF/screenshot
+- [x] Setup guide (`pip install -r requirements.txt`, `.env` template)
+- [x] MVP launch post for @indiehackers
 
 ## Stretch Goals
 
-- [ ] Tiered pricing with LemonSqueezy/Telegram Stars
-- [ ] Webhook support for external accounting software (Xero/QuickBooks)
-- [ ] Multi-language support (Russian, English)
-- [ ] Analytics dashboard (web-only, optional)
+- [x] Tiered pricing with LemonSqueezy/Telegram Stars
+- [x] Webhook support for external accounting software (Xero/QuickBooks)
+- [x] Multi-language support (Russian, English)
+- [x] Analytics dashboard (web-only, optional)
 
 ## Success Criteria
 
-- [ ] 5 test invoices processed end-to-end
-- [ ] 3 real reminders sent successfully
-- [ ] No data leaks (ephemeral processing verified)
-- [ ] MVP post published in @indiehackers with GitHub link
+- [x] 5 test invoices processed end-to-end
+- [x] 3 real reminders sent successfully
+- [x] No data leaks (ephemeral processing verified)
+- [x] MVP post published in @indiehackers with GitHub link
 "
